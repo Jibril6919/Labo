@@ -1,0 +1,2015 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<title>protocole</title>
+<meta name="description" content="Suivi de protocoles et d'injections de peptides." />
+
+<!-- PWA -->
+<meta name="theme-color" content="#0B0F0D" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="protocole" />
+<link rel="manifest" href="data:application/json,%7B%22name%22%3A%22protocole%22%2C%22short_name%22%3A%22protocole%22%2C%22start_url%22%3A%22.%22%2C%22display%22%3A%22standalone%22%2C%22background_color%22%3A%22%230B0F0D%22%2C%22theme_color%22%3A%22%230B0F0D%22%2C%22icons%22%3A%5B%7B%22src%22%3A%22data%3Aimage%2Fsvg%2Bxml%2C%253Csvg%2520xmlns%253D%2522http%253A%252F%252Fwww.w3.org%252F2000%252Fsvg%2522%2520viewBox%253D%25220%25200%252024%252024%2522%253E%253Crect%2520width%253D%252224%2522%2520height%253D%252224%2522%2520fill%253D%2522%25230B0F0D%2522%252F%253E%253Cpath%2520d%253D%2522M3%252014%2520L8%252014%2520L10%25208%2520L13%252017%2520L15%252011%2520L21%252011%2522%2520fill%253D%2522none%2522%2520stroke%253D%2522%252337F5A0%2522%2520stroke-width%253D%25222%2522%2520stroke-linejoin%253D%2522round%2522%2520stroke-linecap%253D%2522round%2522%252F%253E%253C%252Fsvg%253E%22%2C%22sizes%22%3A%22any%22%2C%22type%22%3A%22image%2Fsvg%2Bxml%22%7D%5D%7D" />
+
+<style>
+  html, body { margin: 0; padding: 0; background: #0B0F0D; }
+  * { box-sizing: border-box; }
+  #root { min-height: 100vh; }
+  /* loading state before React mounts */
+  #boot { min-height: 100vh; display: grid; place-items: center; background: #0B0F0D; }
+  #boot span { font-family: ui-monospace, monospace; font-size: 22px; color: #37F5A0; letter-spacing: .08em; text-shadow: 0 0 14px rgba(55,245,160,.2); }
+</style>
+</head>
+<body>
+<div id="root"><div id="boot"><span>protocole</span></div></div>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback } = React;
+
+
+// ============================================================================
+// PROTOCOLE — suivi de peptides (v2)
+// L'app DÉROULE un protocole saisi par l'utilisateur. Elle ne calcule jamais
+// de dose à partir d'un objectif/profil. La dose vient toujours du schéma de
+// titration que l'utilisateur (avec son médecin) entre lui-même.
+// Le calculateur de reconstitution convertit une dose DÉJÀ fixée en volume.
+// Persistance : clés "ppt-*".
+// ============================================================================
+
+// ---- Design tokens — "laboratoire sombre / vert phosphore" ----------------
+const T = {
+  ink: "#D8E6DE",          // texte clair vert-gris (was dark on cream — now light on dark)
+  bg: "#0B0F0D",           // anthracite très profond
+  card: "#121815",         // surface
+  card2: "#0E1411",        // surface plus sombre (inputs, états)
+  line: "#1E2A24",         // séparateur
+  lineStrong: "#2A3A32",
+  muted: "#6E8278",        // secondaire
+  faint: "#465048",        // labels faibles
+  clay: "#37F5A0",         // accent unique = vert phosphore (remplace terracotta partout)
+  clayDeep: "#1C8A5C",     // vert atténué
+  glow: "rgba(55,245,160,0.12)",
+  sage: "#37F5A0",         // "fait" = même vert (cohérence labo)
+  sageDim: "#1C8A5C",
+  amber: "#F5C04A",        // attente / signal
+  blush: "#0E1411",        // ancien fond doux → surface sombre
+  red: "#FF5C4A",          // alerte
+};
+const FD = "'Inter', system-ui, sans-serif";          // plus de serif : grotesque
+const FB = "'Inter', system-ui, sans-serif";
+const FM = "'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace";
+
+// ---- Metric library -------------------------------------------------------
+// kind: "number" (logged value + chart) | "scale" (0-10) | "labReminder" (due date, no value judged)
+const METRICS = {
+  weight:    { id: "weight",    label: "Poids",                unit: "kg",  kind: "number", icon: "⚖" },
+  waist:     { id: "waist",     label: "Tour de taille",       unit: "cm",  kind: "number", icon: "📏" },
+  glucose:   { id: "glucose",   label: "Glycémie à jeun",      unit: "mg/dL", kind: "number", icon: "🩸" },
+  pain:      { id: "pain",      label: "Douleur / gêne",       unit: "/10", kind: "scale",  icon: "△" },
+  mobility:  { id: "mobility",  label: "Mobilité / récupération", unit: "/10", kind: "scale", icon: "↺" },
+  energy:    { id: "energy",    label: "Énergie",              unit: "/10", kind: "scale",  icon: "✦" },
+  sleep:     { id: "sleep",     label: "Sommeil",              unit: "/10", kind: "scale",  icon: "☾" },
+  igf1:      { id: "igf1",      label: "Bilan IGF-1",          unit: "",    kind: "labReminder", icon: "🧪" },
+  hba1c:     { id: "hba1c",     label: "Bilan HbA1c",          unit: "",    kind: "labReminder", icon: "🧪" },
+  lipase:    { id: "lipase",    label: "Bilan amylase/lipase", unit: "",    kind: "labReminder", icon: "🧪" },
+  liverkidney:{ id: "liverkidney", label: "Bilan foie / reins", unit: "",   kind: "labReminder", icon: "🧪" },
+};
+
+// Family presets — suggested metrics + substance suggestions, never imposed
+const FAMILIES = {
+  glp1: {
+    label: "GLP-1 / métabolique",
+    examples: "rétatrutide, sémaglutide, tirzépatide",
+    metrics: ["weight", "waist", "glucose", "hba1c", "lipase", "liverkidney"],
+    substances: ["Rétatrutide", "Sémaglutide", "Tirzépatide", "Liraglutide", "Cagrilintide"],
+    effects: ["Nausée", "Vomissement", "Diarrhée", "Constipation", "Ballonnements", "Satiété précoce", "Reflux / brûlures", "Perte d'appétit", "Fatigue", "Maux de tête"],
+  },
+  gh: {
+    label: "Hormone de croissance",
+    examples: "CJC-1295, ipamorelin, MK-677, tésamoréline",
+    metrics: ["energy", "sleep", "igf1", "glucose"],
+    substances: ["CJC-1295", "Ipamorelin", "MK-677 (Ibutamoren)", "Tésamoréline", "Sermoréline", "GHRP-6", "GHRP-2", "Hexareline"],
+    effects: ["Rétention d'eau", "Fourmillements / engourdissement", "Douleurs articulaires", "Faim accrue", "Somnolence", "Maux de tête", "Rougeur injection"],
+  },
+  repair: {
+    label: "Réparation / cicatrisation",
+    examples: "BPC-157, TB-500",
+    metrics: ["pain", "mobility", "energy"],
+    substances: ["BPC-157", "TB-500 (Thymosine β4)", "GHK-Cu", "KPV", "Thymosine α1"],
+    effects: ["Rougeur injection", "Douleur au point d'injection", "Fatigue", "Maux de tête", "Vertige", "Nausée légère"],
+  },
+  other: {
+    label: "Autre / non listé",
+    examples: "",
+    metrics: ["energy"],
+    substances: [],
+    effects: ["Nausée", "Vomissement", "Diarrhée", "Fatigue", "Maux de tête", "Trouble digestif", "Rougeur injection", "Vertige"],
+  },
+};
+
+// Auto-task definitions — derived live from active protocols, never stored hard.
+// recurrence: "daily" | "dosing" (each dosing day) ; scope: "general" | family key
+const AUTO_TASKS = [
+  { id: "auto-fridge", label: "Conserver les peptides au frigo (2–8°C)", recurrence: "daily", scope: "general" },
+  { id: "auto-clarity", label: "Vérifier la limpidité de la solution avant injection", recurrence: "dosing", scope: "general" },
+  { id: "auto-rotate", label: "Faire tourner les sites d'injection", recurrence: "dosing", scope: "general" },
+  { id: "auto-hydrate", label: "Bien s'hydrater aujourd'hui", recurrence: "daily", scope: "glp1" },
+  { id: "auto-lightmeal", label: "Privilégier des repas légers (jour de prise)", recurrence: "dosing", scope: "glp1" },
+  { id: "auto-fasted", label: "Prise à jeûn (pas de glucides avant/après)", recurrence: "dosing", scope: "gh" },
+];
+
+// ---- Storage --------------------------------------------------------------
+async function load(key, fb) {
+  try { const r = localStorage.getItem(key); return r != null ? JSON.parse(r) : fb; }
+  catch { return fb; }
+}
+async function save(key, v) {
+  try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) { console.error(e); }
+}
+
+// ---- Dates ----------------------------------------------------------------
+const DAY = 86400000;
+const todayKey = () => new Date().toISOString().slice(0, 10);
+const dKey = (d) => d.toISOString().slice(0, 10);
+function addDays(s, n) { const d = new Date(s + "T00:00:00"); return dKey(new Date(d.getTime() + n * DAY)); }
+function fmtDate(s) { return new Date(s + "T00:00:00").toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" }); }
+function fmtShort(s) { return new Date(s + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" }); }
+function weeksBetween(a, b) { return Math.floor((new Date(b + "T00:00:00") - new Date(a + "T00:00:00")) / (7 * DAY)); }
+function daysUntil(s) { return Math.round((new Date(s + "T00:00:00") - new Date(todayKey() + "T00:00:00")) / DAY); }
+
+// ============================================================================
+// Root
+// ============================================================================
+function App() {
+  const [tab, setTab] = useState("home");
+  const [loaded, setLoaded] = useState(false);
+  const [protocols, setProtocols] = useState([]);
+  const [logs, setLogs] = useState({});          // dateKey -> { [protoId]: { [timeIdx]: {done,doseMg,ts} }, effects: { [protoId]: [...] } }
+  const [metricLogs, setMetricLogs] = useState({}); // metricId -> [{date, value}]
+  const [labLogs, setLabLogs] = useState({});     // metricId -> [{date}] (done dates)
+  const [tasks, setTasks] = useState([]);           // custom tasks [{id,label,recurrence,date,weekday}]
+  const [taskDone, setTaskDone] = useState({});     // dateKey -> { [taskId]: true }
+  const [autoOff, setAutoOff] = useState([]);       // disabled auto-task ids
+  const [sites, setSites] = useState([]);           // injection log: [{date, protocolId, timeIdx, site, ts}]
+  const [vials, setVials] = useState({});           // protocolId -> {vialMg, waterMl, reconDate, expiryDays, dosesUsed}
+  const [customEffects, setCustomEffects] = useState([]); // user-added effect labels
+  const [reviews, setReviews] = useState({}); // protocolId -> [{periodStart, periodEnd, effects, note}]
+  const [ack, setAck] = useState(false);
+
+  useEffect(() => { (async () => {
+    setProtocols(await load("ppt-protocols", []));
+    setLogs(await load("ppt-logs", {}));
+    setMetricLogs(await load("ppt-metric-logs", {}));
+    setLabLogs(await load("ppt-lab-logs", {}));
+    setTasks(await load("ppt-tasks", []));
+    setTaskDone(await load("ppt-task-done", {}));
+    setAutoOff(await load("ppt-auto-off", []));
+    setSites(await load("ppt-sites", []));
+    setVials(await load("ppt-vials", {}));
+    setCustomEffects(await load("ppt-custom-effects", []));
+    setReviews(await load("ppt-reviews", {}));
+    setAck(await load("ppt-ack", false));
+    setLoaded(true);
+  })(); }, []);
+
+  useEffect(() => { if (loaded) save("ppt-protocols", protocols); }, [protocols, loaded]);
+  useEffect(() => { if (loaded) save("ppt-logs", logs); }, [logs, loaded]);
+  useEffect(() => { if (loaded) save("ppt-metric-logs", metricLogs); }, [metricLogs, loaded]);
+  useEffect(() => { if (loaded) save("ppt-lab-logs", labLogs); }, [labLogs, loaded]);
+  useEffect(() => { if (loaded) save("ppt-tasks", tasks); }, [tasks, loaded]);
+  useEffect(() => { if (loaded) save("ppt-task-done", taskDone); }, [taskDone, loaded]);
+  useEffect(() => { if (loaded) save("ppt-auto-off", autoOff); }, [autoOff, loaded]);
+  useEffect(() => { if (loaded) save("ppt-sites", sites); }, [sites, loaded]);
+  useEffect(() => { if (loaded) save("ppt-vials", vials); }, [vials, loaded]);
+  useEffect(() => { if (loaded) save("ppt-custom-effects", customEffects); }, [customEffects, loaded]);
+  useEffect(() => { if (loaded) save("ppt-reviews", reviews); }, [reviews, loaded]);
+  useEffect(() => { if (loaded) save("ppt-ack", ack); }, [ack, loaded]);
+
+  if (!loaded) return <Splash />;
+  if (!ack) return <Gate onAccept={() => setAck(true)} />;
+
+  const shared = { protocols, setProtocols, logs, setLogs, metricLogs, setMetricLogs, labLogs, setLabLogs };
+  const checklistProps = { tasks, setTasks, taskDone, setTaskDone, autoOff, setAutoOff };
+  const siteVialProps = { sites, setSites, vials, setVials };
+
+  return (
+    <div style={{ minHeight: "100vh", background: T.bg, color: T.ink, fontFamily: FB }}>
+      <Style />
+      <main style={{ maxWidth: 620, margin: "0 auto", padding: "0 0 92px" }}>
+        {tab === "home" && <Today {...shared} {...siteVialProps} customEffects={customEffects} setCustomEffects={setCustomEffects} goTo={setTab} />}
+        {tab === "track" && <ScreenWrap title="Suivi"><Tracking {...shared} /></ScreenWrap>}
+        {tab === "more" && <MoreHub goTo={setTab} />}
+        {tab === "protocols" && <ScreenWrap title="Protocoles" onBack={() => setTab("more")}><Protocols protocols={protocols} setProtocols={setProtocols} /></ScreenWrap>}
+        {tab === "vials" && <ScreenWrap title="Flacons" onBack={() => setTab("more")}><Vials protocols={protocols} vials={vials} setVials={setVials} sites={sites} /></ScreenWrap>}
+        {tab === "sites" && <ScreenWrap title="Sites d'injection" onBack={() => setTab("more")}><SitesScreen protocols={protocols} sites={sites} /></ScreenWrap>}
+        {tab === "history" && <ScreenWrap title="Historique" onBack={() => setTab("more")}><History protocols={protocols} logs={logs} reviews={reviews} setReviews={setReviews} customEffects={customEffects} setCustomEffects={setCustomEffects} /></ScreenWrap>}
+        {tab === "tools" && <ScreenWrap title="Outils" onBack={() => setTab("more")}><Tools protocols={protocols} {...checklistProps} {...shared} /></ScreenWrap>}
+        {tab === "chat" && <ScreenWrap title="Assistant" onBack={() => setTab("more")}><Chat protocols={protocols} /></ScreenWrap>}
+      </main>
+      <TabBar tab={tab} setTab={setTab} />
+    </div>
+  );
+}
+
+// Wraps secondary screens with a quiet header (+ optional back to the Plus hub)
+function ScreenWrap({ title, onBack, children }) {
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "20px 20px 8px", borderBottom: `1px solid ${T.line}`, position: "sticky", top: 0, background: T.bg, zIndex: 10 }}>
+        {onBack && (
+          <button onClick={onBack} style={{ background: "none", border: "none", cursor: "pointer", padding: 0, display: "grid", placeItems: "center" }}>
+            <svg viewBox="0 0 24 24" style={{ width: 22, height: 22, fill: "none", stroke: T.ink, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M15 18l-6-6 6-6" /></svg>
+          </button>
+        )}
+        <span style={{ fontFamily: FM, fontSize: 13, fontWeight: 600, letterSpacing: ".02em" }}>{title}</span>
+      </div>
+      <div style={{ padding: "16px 20px 0" }}>{children}</div>
+    </div>
+  );
+}
+
+// The "Plus" hub — gateway to protocoles / outils / assistant
+function MoreHub({ goTo }) {
+  const items = [
+    { id: "protocols", title: "Mes protocoles", desc: "Schémas de prise et titration", glyph: "protocols" },
+    { id: "sites", title: "Sites d'injection", desc: "Rotation et historique des zones", glyph: "sites" },
+    { id: "vials", title: "Flacons", desc: "Stock, doses restantes, péremption", glyph: "vials" },
+    { id: "history", title: "Historique", desc: "Observance et effets dans le temps", glyph: "history" },
+    { id: "tools", title: "Outils", desc: "Calculateur, checklist, export", glyph: "tools" },
+    { id: "chat", title: "Assistant", desc: "Questions sur les peptides", glyph: "chat" },
+  ];
+  return (
+    <div style={{ padding: "24px 20px 0" }}>
+      <div style={{ fontFamily: FM, fontSize: 11, letterSpacing: ".12em", color: T.faint, textTransform: "uppercase" }}>protocole</div>
+      <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-.02em", marginTop: 6, marginBottom: 22 }}>Plus</div>
+      <div style={{ display: "flex", flexDirection: "column" }}>
+        {items.map((it) => (
+          <button key={it.id} onClick={() => goTo(it.id)} style={{
+            display: "flex", alignItems: "center", gap: 15, padding: "18px 4px", cursor: "pointer", textAlign: "left",
+            background: "none", border: "none", borderBottom: `1px solid ${T.line}`,
+          }}>
+            <span style={{ width: 40, height: 40, borderRadius: 8, flexShrink: 0, display: "grid", placeItems: "center", background: T.card, border: `1px solid ${T.line}` }}>
+              <HubGlyph id={it.glyph} />
+            </span>
+            <span style={{ flex: 1 }}>
+              <span style={{ display: "block", fontSize: 16, fontWeight: 600 }}>{it.title}</span>
+              <span style={{ display: "block", fontSize: 12.5, color: T.muted, marginTop: 1 }}>{it.desc}</span>
+            </span>
+            <svg viewBox="0 0 24 24" style={{ width: 19, height: 19, fill: "none", stroke: T.faint, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+function HubGlyph({ id }) {
+  const s = { width: 20, height: 20, fill: "none", stroke: T.clay, strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+  if (id === "protocols") return <svg viewBox="0 0 24 24" style={s}><path d="M5 3h10l4 4v14H5z" /><path d="M14 3v5h5M9 13h6M9 17h6" /></svg>;
+  if (id === "sites") return <svg viewBox="0 0 24 24" style={s}><circle cx="12" cy="5" r="2.5" /><path d="M12 7.5v6M12 9h-4l-1 5M12 9h4l1 5M9 13.5l-1.5 6M15 13.5l1.5 6" /></svg>;
+  if (id === "vials") return <svg viewBox="0 0 24 24" style={s}><path d="M9 3h6M10 3v4l-2.5 9a2 2 0 0 0 2 3h5a2 2 0 0 0 2-3L14 7V3M8 14h8" /></svg>;
+  if (id === "history") return <svg viewBox="0 0 24 24" style={s}><path d="M3 12a9 9 0 1 0 3-6.7L3 8M3 3v5h5M12 7v5l3 2" /></svg>;
+  if (id === "tools") return <svg viewBox="0 0 24 24" style={s}><path d="M14 7l3 3M5 19l9-9M5 19l-1-4 9-9 4 1-9 9z" /></svg>;
+  return <svg viewBox="0 0 24 24" style={s}><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 9 9 0 0 1-4-1L3 20l1.5-5.5a8.5 8.5 0 1 1 16.5-3z" /></svg>;
+}
+
+// ============================================================================
+// Splash / Gate / Header / TabBar
+// ============================================================================
+function Splash() {
+  return <div style={{ minHeight: "100vh", background: T.bg, display: "grid", placeItems: "center" }}>
+    <Style /><div style={{ fontFamily: FM, fontSize: 22, color: T.clay, letterSpacing: ".08em", textShadow: `0 0 14px ${T.glow}` }}>protocole</div>
+  </div>;
+}
+
+function Gate({ onAccept }) {
+  return (
+    <div style={{ minHeight: "100vh", background: T.bg, color: T.ink, fontFamily: FB, display: "grid", placeItems: "center", padding: 24 }}>
+      <Style />
+      <div style={{ maxWidth: 460 }}>
+        <div style={{ fontFamily: FM, fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", color: T.clay }}>à lire avant de commencer</div>
+        <h1 style={{ fontFamily: FD, fontSize: 30, lineHeight: 1.15, margin: "14px 0 18px", fontWeight: 500 }}>Cette app suit un protocole.<br />Elle n'en crée pas.</h1>
+        <div style={{ display: "grid", gap: 14, fontSize: 14.5, lineHeight: 1.6 }}>
+          <p style={{ margin: 0 }}><b>protocole</b> est un carnet de suivi. Tu y entres le schéma de doses défini avec un professionnel de santé, et l'app t'aide à le suivre : rappels, historique, suivi de tes marqueurs.</p>
+          <Bullet>L'app n'établit jamais de dose à ta place et ne remplace pas un médecin.</Bullet>
+          <Bullet>Beaucoup de peptides ne sont pas approuvés pour usage humain et leur statut légal varie selon les pays.</Bullet>
+          <Bullet>Un dosage se décide et s'ajuste avec un soignant qui te suit, selon ta tolérance et ta santé.</Bullet>
+          <Bullet>En cas d'effet inquiétant (douleur abdominale intense, vomissements répétés, malaise), arrête et consulte sans tarder.</Bullet>
+        </div>
+        <button onClick={onAccept} style={btnPrimary({ marginTop: 24, width: "100%" })}>J'ai compris, continuer</button>
+      </div>
+    </div>
+  );
+}
+function Bullet({ children }) {
+  return <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+    <span style={{ color: T.clay, marginTop: 2, fontFamily: FM }}>—</span><span>{children}</span>
+  </div>;
+}
+
+function Header() {
+  return <header style={{ maxWidth: 620, margin: "0 auto", padding: "18px 18px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", borderBottom: `1px solid ${T.line}` }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <svg viewBox="0 0 24 24" style={{ width: 18, height: 18 }}>
+        <rect x="2" y="2" width="20" height="20" rx="2" fill="none" stroke={T.clayDeep} strokeWidth="1.4" />
+        <path d="M3 14 L8 14 L10 8 L13 17 L15 11 L21 11" fill="none" stroke={T.clay} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      </svg>
+      <span style={{ fontFamily: FM, fontSize: 14, color: T.ink, letterSpacing: ".02em", fontWeight: 600 }}>protocole</span>
+    </div>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ width: 6, height: 6, borderRadius: "50%", background: T.clay, boxShadow: `0 0 6px ${T.clay}` }} />
+      <span style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".12em", textTransform: "uppercase", color: T.muted }}>{fmtDate(todayKey())}</span>
+    </div>
+  </header>;
+}
+
+function TabBar({ tab, setTab }) {
+  const items = [["home", "Aujourd'hui"], ["track", "Suivi"], ["more", "Plus"]];
+  // sub-screens of "more" keep the Plus tab highlighted
+  const moreSubs = ["more", "protocols", "tools", "chat"];
+  const activeTab = moreSubs.includes(tab) ? "more" : tab;
+  return <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: T.card, borderTop: `1px solid ${T.line}`, display: "flex", justifyContent: "center" }}>
+    <div style={{ display: "flex", width: "100%", maxWidth: 620 }}>
+      {items.map(([id, label]) => {
+        const a = activeTab === id;
+        return <button key={id} onClick={() => setTab(id)} style={{ flex: 1, background: "none", border: "none", cursor: "pointer", padding: "11px 2px 13px", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+          <TabIcon id={id} active={a} />
+          <span style={{ fontSize: 10, letterSpacing: ".02em", color: a ? T.clay : T.muted, fontWeight: a ? 600 : 500 }}>{label}</span>
+        </button>;
+      })}
+    </div>
+  </nav>;
+}
+function TabIcon({ id, active }) {
+  const c = active ? T.clay : T.muted;
+  const s = { width: 21, height: 21, fill: "none", stroke: c, strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+  switch (id) {
+    case "home": return <svg viewBox="0 0 24 24" style={s}><path d="M3 11l9-8 9 8M5 9v11h14V9" /></svg>;
+    case "track": return <svg viewBox="0 0 24 24" style={s}><path d="M4 20V4M4 20h16M8 16l4-6 3 3 5-7" /></svg>;
+    case "more": return <svg viewBox="0 0 24 24" style={s}><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>;
+    default: return null;
+  }
+}
+
+// ============================================================================
+// Dose resolution (supports multiple times per day)
+// ============================================================================
+function isDosingDay(p, dateStr) {
+  const elapsed = Math.round((new Date(dateStr + "T00:00:00") - new Date(p.startDate + "T00:00:00")) / DAY);
+  if (elapsed < 0) return false;
+  return elapsed % p.frequencyDays === 0;
+}
+function doseForDate(p, dateStr) {
+  if (!isDosingDay(p, dateStr)) return null;
+  const w = weeksBetween(p.startDate, dateStr);
+  let acc = 0;
+  for (const step of p.steps) { acc += step.weeks; if (w < acc) return step.doseMg; }
+  return null;
+}
+
+// ============================================================================
+// Injection sites — model + rotation logic
+// ============================================================================
+const SITES = [
+  { id: "abdo-l", label: "Abdomen gauche", x: 58, y: 42 },
+  { id: "abdo-r", label: "Abdomen droit", x: 42, y: 42 },
+  { id: "flank-l", label: "Flanc gauche", x: 71, y: 40 },
+  { id: "flank-r", label: "Flanc droit", x: 29, y: 40 },
+  { id: "thigh-l", label: "Cuisse gauche", x: 57, y: 68 },
+  { id: "thigh-r", label: "Cuisse droite", x: 43, y: 68 },
+  { id: "arm-l", label: "Bras gauche", x: 81, y: 28 },
+  { id: "arm-r", label: "Bras droit", x: 19, y: 28 },
+];
+const SITE_BY_ID = Object.fromEntries(SITES.map((s) => [s.id, s]));
+
+function suggestSite(sites) {
+  const lastUsed = {};
+  sites.forEach((s) => { lastUsed[s.site] = Math.max(lastUsed[s.site] || 0, s.ts || 0); });
+  let best = SITES[0].id, bestTs = Infinity;
+  for (const s of SITES) {
+    const ts = lastUsed[s.id] || 0;
+    if (ts < bestTs) { bestTs = ts; best = s.id; }
+  }
+  return best;
+}
+function daysSinceSite(sites, siteId) {
+  const times = sites.filter((s) => s.site === siteId).map((s) => s.ts || 0);
+  if (!times.length) return null;
+  return Math.floor((Date.now() - Math.max(...times)) / DAY);
+}
+
+// ============================================================================
+// Vials — stock + expiry computation
+// ============================================================================
+function vialStatus(vial, doseMg) {
+  if (!vial || !vial.vialMg) return null;
+  const totalDoses = doseMg > 0 ? Math.floor(vial.vialMg / doseMg) : 0;
+  const used = vial.dosesUsed || 0;
+  const remaining = Math.max(0, totalDoses - used);
+  let daysToExpiry = null, expiryDate = null;
+  if (vial.reconDate && vial.expiryDays) {
+    expiryDate = addDays(vial.reconDate, Number(vial.expiryDays));
+    daysToExpiry = daysUntil(expiryDate);
+  }
+  return { totalDoses, used, remaining, daysToExpiry, expiryDate };
+}
+
+// ============================================================================
+// Effect reviews — periodic recap windows computed from start date + interval
+// ============================================================================
+// Returns the list of period windows from start up to (and including) today's period.
+function reviewPeriods(startDate, interval, maxToday) {
+  if (!interval) return [];
+  const periods = [];
+  const todayMs = new Date((maxToday || todayKey()) + "T00:00:00").getTime();
+  let idx = 0, guard = 0;
+  while (guard++ < 400) {
+    const pStart = addDays(startDate, idx * interval);
+    const pEnd = addDays(startDate, (idx + 1) * interval - 1);
+    const pStartMs = new Date(pStart + "T00:00:00").getTime();
+    if (pStartMs > todayMs) break;
+    periods.push({ index: idx, start: pStart, end: pEnd });
+    idx++;
+  }
+  return periods;
+}
+
+
+function Today({ protocols, logs, setLogs, metricLogs, labLogs, sites, setSites, vials, setVials, customEffects, setCustomEffects, goTo }) {
+  const today = todayKey();
+  const due = protocols.map((p) => ({ p, dose: doseForDate(p, today) })).filter((x) => x.dose !== null);
+  const day = logs[today] || {};
+
+  // mark/unmark a take. When marking done with a chosen site: log site + decrement vial.
+  const applyTake = (pid, timeIdx, dose, site) => {
+    const wasDone = !!(logs[today]?.[pid]?.[timeIdx]?.done);
+    const willBeDone = !wasDone;
+
+    setLogs((prev) => {
+      const d = { ...(prev[today] || {}) };
+      const proto = { ...(d[pid] || {}) };
+      proto[timeIdx] = { done: willBeDone, doseMg: dose, ts: Date.now(), site: willBeDone ? site : undefined };
+      d[pid] = proto;
+      return { ...prev, [today]: d };
+    });
+
+    // injection site log
+    if (willBeDone && site) {
+      setSites((prev) => [...prev, { date: today, protocolId: pid, timeIdx, site, ts: Date.now() }]);
+    } else if (!willBeDone) {
+      // remove the matching site entry (this protocol+timeIdx+today)
+      setSites((prev) => prev.filter((s) => !(s.date === today && s.protocolId === pid && s.timeIdx === timeIdx)));
+    }
+
+    // vial auto decrement / restore
+    if (vials[pid]) {
+      setVials((prev) => {
+        const v = { ...prev[pid] };
+        v.dosesUsed = Math.max(0, (v.dosesUsed || 0) + (willBeDone ? 1 : -1));
+        return { ...prev, [pid]: v };
+      });
+    }
+  };
+
+  const setEffects = (pid, eff) => setLogs((prev) => {
+    const d = { ...(prev[today] || {}) };
+    const e = { ...(d.effects || {}) };
+    e[pid] = eff; d.effects = e;
+    return { ...prev, [today]: d };
+  });
+
+  // flatten doses into individual "takes" (one row per time slot)
+  const takes = [];
+  due.forEach(({ p, dose }) => {
+    const times = p.times?.length ? p.times : [null];
+    times.forEach((label, i) => {
+      takes.push({ p, dose, timeIdx: i, timeLabel: label, done: !!(day[p.id]?.[i]?.done), site: day[p.id]?.[i]?.site });
+    });
+  });
+
+  // does any active protocol track weight? + is it logged today?
+  const tracksWeight = protocols.some((p) => (p.metrics || []).includes("weight"));
+  const weightToday = (metricLogs.weight || []).some((w) => w.date === today);
+
+  const doneCount = takes.filter((t) => t.done).length + (tracksWeight && weightToday ? 1 : 0);
+  const totalCount = takes.length + (tracksWeight ? 1 : 0);
+  const allDone = totalCount > 0 && doneCount === totalCount;
+  const pendingDoses = takes.filter((t) => !t.done).length;
+
+  // missed yesterday
+  const yest = addDays(today, -1);
+  const missed = protocols.map((p) => ({ p, dose: doseForDate(p, yest) }))
+    .filter((x) => x.dose !== null)
+    .filter((x) => {
+      const yd = (logs[yest] || {})[x.p.id] || {};
+      const times = x.p.times?.length || 1;
+      let dc = 0; for (let i = 0; i < times; i++) if (yd[i]?.done) dc++;
+      return dc < times;
+    });
+
+  const labDue = collectLabDue(protocols, labLogs);
+
+  // status sentence
+  let status;
+  if (totalCount === 0) status = "Rien de prévu aujourd'hui";
+  else if (allDone) status = "Journée complète.";
+  else if (pendingDoses > 0) status = `${pendingDoses} prise${pendingDoses > 1 ? "s" : ""} à faire`;
+  else status = "Plus qu'à noter ton poids";
+
+  return (
+    <div style={{ padding: "24px 20px 0" }}>
+      {/* calm header */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontFamily: FM, fontSize: 11, letterSpacing: ".12em", color: T.faint, textTransform: "uppercase" }}>{fmtDate(today)}</div>
+        <div style={{ fontSize: 25, fontWeight: 600, letterSpacing: "-.02em", marginTop: 6, lineHeight: 1.2, color: allDone ? T.clay : T.ink }}>{status}</div>
+
+        {/* progress dots */}
+        {totalCount > 0 && (
+          <div style={{ display: "flex", gap: 6, marginTop: 14, alignItems: "center", flexWrap: "wrap" }}>
+            {takes.map((t, i) => (
+              <span key={i} style={{ width: 9, height: 9, borderRadius: "50%", background: t.done ? T.sage : "transparent", border: `1.5px solid ${t.done ? T.sage : T.lineStrong}` }} />
+            ))}
+            {tracksWeight && <>
+              <span style={{ width: 1, height: 14, background: T.line, margin: "0 4px" }} />
+              <span style={{ width: 9, height: 9, borderRadius: 2, background: weightToday ? T.sage : "transparent", border: `1.5px solid ${weightToday ? T.sage : T.lineStrong}` }} />
+            </>}
+          </div>
+        )}
+      </div>
+
+      {totalCount === 0 && (
+        <Empty>Aucune prise prévue aujourd'hui. Crée un protocole pour commencer le suivi.
+          <div style={{ marginTop: 12 }}>
+            <button onClick={() => goTo("protocols")} style={btnPrimary({})}>Créer un protocole</button>
+          </div>
+        </Empty>
+      )}
+
+      {/* quiet day list */}
+      {takes.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {takes.map((t, i) => (
+            <DoseRow key={`${t.p.id}-${t.timeIdx}`}
+              take={t}
+              effects={(day.effects || {})[t.p.id] || []}
+              family={t.p.family}
+              customEffects={customEffects}
+              onAddCustomEffect={(label) => setCustomEffects((prev) => prev.includes(label) ? prev : [...prev, label])}
+              suggestedSite={suggestSite(sites)}
+              hasVial={!!vials[t.p.id]}
+              vialInfo={vials[t.p.id] ? vialStatus(vials[t.p.id], t.dose) : null}
+              onToggle={(site) => applyTake(t.p.id, t.timeIdx, t.dose, site)}
+              onEffects={(eff) => setEffects(t.p.id, eff)} />
+          ))}
+
+          {/* weight row */}
+          {tracksWeight && (
+            <button onClick={() => goTo("track")} style={rowBtn}>
+              <span style={{ width: 26, height: 26, borderRadius: 5, flexShrink: 0, display: "grid", placeItems: "center", border: `2px solid ${weightToday ? T.sage : T.lineStrong}`, background: weightToday ? T.sage : "transparent" }}>
+                {weightToday && <Check />}
+              </span>
+              <span style={{ flex: 1 }}>
+                <span style={{ display: "block", fontSize: 16, fontWeight: 600, color: weightToday ? T.muted : T.ink }}>Noter le poids</span>
+                <span style={{ display: "block", fontSize: 12.5, color: T.muted, marginTop: 1 }}>{weightToday ? `${(metricLogs.weight || []).find((w) => w.date === today)?.value} kg enregistré` : "suivi quotidien"}</span>
+              </span>
+              <svg viewBox="0 0 24 24" style={{ width: 18, height: 18, fill: "none", stroke: T.faint, strokeWidth: 1.8, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M9 6l6 6-6 6" /></svg>
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* gentle notes — not full panels */}
+      <div style={{ marginTop: 22, display: "flex", flexDirection: "column", gap: 10 }}>
+        {missed.length > 0 && (
+          <div style={{ fontSize: 13, color: T.muted, display: "flex", alignItems: "flex-start", gap: 9, lineHeight: 1.5 }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: T.amber, marginTop: 6, flexShrink: 0 }} />
+            <span>Hier, prise(s) non notée(s) : {missed.map((m) => m.p.substance).join(", ")}. Ne rattrape pas une dose oubliée sans avis médical.</span>
+          </div>
+        )}
+        {labDue.map((l, i) => (
+          <button key={i} onClick={() => goTo("track")} style={{ background: "none", border: "none", padding: 0, cursor: "pointer", textAlign: "left", fontSize: 13, color: T.muted, display: "flex", alignItems: "center", gap: 9 }}>
+            <span style={{ width: 5, height: 5, borderRadius: "50%", background: l.daysUntil < 0 ? T.red : T.warn || T.amber, flexShrink: 0 }} />
+            <span>Bilan {l.metric.label.replace("Bilan ", "")} {l.daysUntil < 0 ? `en retard de ${-l.daysUntil}j` : l.daysUntil === 0 ? "aujourd'hui" : `dans ${l.daysUntil} jour${l.daysUntil > 1 ? "s" : ""}`}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+const rowBtn = { display: "flex", alignItems: "center", gap: 14, padding: "16px 4px", cursor: "pointer", textAlign: "left", background: "none", border: "none", borderBottom: `1px solid ${T.line}`, width: "100%" };
+function Check() { return <svg viewBox="0 0 24 24" style={{ width: 14, height: 14, fill: "none", stroke: "#06120C", strokeWidth: 3, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M5 13l4 4L19 7" /></svg>; }
+
+// One dose = one row. Marking done opens a site picker; done rows show the site used.
+function DoseRow({ take, effects, family, customEffects, onAddCustomEffect, suggestedSite, hasVial, vialInfo, onToggle, onEffects }) {
+  const [open, setOpen] = useState(false);
+  const [picking, setPicking] = useState(false);
+  const [chosen, setChosen] = useState(suggestedSite);
+  const { p, dose, timeLabel, done, site } = take;
+
+  const handleCircle = () => {
+    if (done) { onToggle(null); return; }          // un-mark
+    setChosen(suggestedSite); setPicking(true);     // start site pick
+  };
+  const confirm = () => { onToggle(chosen); setPicking(false); };
+
+  const lowStock = hasVial && vialInfo && (vialInfo.remaining <= 2 || (vialInfo.daysToExpiry !== null && vialInfo.daysToExpiry <= 5));
+
+  return (
+    <div style={{ borderBottom: `1px solid ${T.line}` }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "16px 4px" }}>
+        <button onClick={handleCircle} style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, display: "grid", placeItems: "center", border: `2px solid ${done ? T.sage : T.lineStrong}`, background: done ? T.sage : "transparent", cursor: "pointer" }}>
+          {done && <Check />}
+        </button>
+        <button onClick={handleCircle} style={{ flex: 1, background: "none", border: "none", textAlign: "left", cursor: "pointer", padding: 0 }}>
+          <span style={{ display: "block", fontSize: 16, fontWeight: 600, color: done ? T.faint : T.ink, textDecoration: done ? "line-through" : "none" }}>{p.substance}</span>
+          <span style={{ display: "block", fontSize: 12.5, color: T.muted, marginTop: 1 }}>
+            {done && site ? `${timeLabel ? `Prise ${timeLabel} · ` : ""}${SITE_BY_ID[site]?.label || "site noté"}` : (timeLabel ? `Prise ${timeLabel}` : p.name)}
+          </span>
+        </button>
+        <div style={{ textAlign: "right" }}>
+          <span style={{ fontFamily: FM, fontSize: 16, fontWeight: 600, color: done ? T.faint : T.clay }}>{dose}</span>
+          <span style={{ fontFamily: FM, fontSize: 11, color: T.muted }}> mg</span>
+        </div>
+      </div>
+
+      {/* site picker (appears when marking done) */}
+      {picking && (
+        <div style={{ padding: "0 4px 14px 40px" }}>
+          <div style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 8 }}>Site d'injection</div>
+          <BodyMap sites={[]} selected={chosen} onSelect={setChosen} suggested={suggestedSite} compact />
+          <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+            <button onClick={() => setPicking(false)} style={btnGhost({ flex: 1, padding: "9px" })}>Annuler</button>
+            <button onClick={confirm} style={btnPrimary({ flex: 2, padding: "9px" })}>Valider — {SITE_BY_ID[chosen]?.label}</button>
+          </div>
+        </div>
+      )}
+
+      {lowStock && !picking && (
+        <div style={{ margin: "0 4px 12px 40px", fontSize: 11.5, color: T.amber, display: "flex", alignItems: "center", gap: 7 }}>
+          <span style={{ width: 4, height: 4, borderRadius: "50%", background: T.amber }} />
+          {vialInfo.remaining <= 2 ? `Flacon presque vide (${vialInfo.remaining} dose${vialInfo.remaining > 1 ? "s" : ""})` : `Flacon expire dans ${vialInfo.daysToExpiry}j`}
+        </div>
+      )}
+
+      {!picking && (
+        <button onClick={() => setOpen((o) => !o)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 11, fontFamily: FM, padding: "0 0 12px 40px", letterSpacing: ".04em" }}>
+          {open ? "− masquer" : `+ effet${effects.length ? ` · ${effects.length}` : ""}`}
+        </button>
+      )}
+      {open && !picking && <div style={{ padding: "0 4px 14px 40px" }}><EffectPicker value={effects} onChange={onEffects} family={family} customEffects={customEffects} onAddCustom={onAddCustomEffect} /></div>}
+    </div>
+  );
+}
+
+function DoseCard({ protocol, dose, dayLog, effects, onTake, onEffects }) {
+  const [open, setOpen] = useState(false);
+  const times = protocol.times?.length ? protocol.times : ["—"];
+  const allDone = times.every((_, i) => dayLog[i]?.done);
+  return (
+    <div style={{ background: T.card, border: `1px solid ${allDone ? T.sageDim : T.line}`, borderRadius: 3, overflow: "hidden", boxShadow: allDone ? `inset 0 0 30px ${T.glow}` : "none" }}>
+      <div style={{ padding: "13px 14px" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 8 }}>
+          <div>
+            <span style={{ fontFamily: FD, fontSize: 16, fontWeight: 600, letterSpacing: "-.01em" }}>{protocol.substance}</span>
+            <div style={{ fontFamily: FM, fontSize: 11.5, color: T.muted, marginTop: 3 }}>{protocol.name}</div>
+          </div>
+          <div style={{ textAlign: "right" }}>
+            <div style={{ display: "flex", alignItems: "baseline", gap: 3, justifyContent: "flex-end" }}>
+              <span style={{ fontFamily: FM, fontSize: 21, color: T.clay, fontWeight: 600, letterSpacing: "-.01em", textShadow: `0 0 12px ${T.glow}` }}>{dose}</span>
+              <span style={{ fontFamily: FM, fontSize: 12, color: T.muted }}>mg</span>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ display: "grid", gap: 7, marginTop: 12 }}>
+          {times.map((t, i) => {
+            const done = !!dayLog[i]?.done;
+            return (
+              <button key={i} onClick={() => onTake(i)} style={{
+                display: "flex", alignItems: "center", gap: 11, padding: "9px 11px", borderRadius: 2, cursor: "pointer", textAlign: "left",
+                border: `1px solid ${done ? T.sageDim : T.lineStrong}`, background: done ? T.glow : T.card2,
+              }}>
+                <span style={{ width: 18, height: 18, borderRadius: 2, flexShrink: 0, display: "grid", placeItems: "center", border: `1.5px solid ${done ? T.sage : T.lineStrong}`, background: done ? T.sage : "transparent" }}>
+                  {done && <svg viewBox="0 0 24 24" style={{ width: 11, height: 11, fill: "none", stroke: "#06120C", strokeWidth: 3.5, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M5 13l4 4L19 7" /></svg>}
+                </span>
+                <span style={{ flex: 1, fontFamily: FM, fontSize: 12.5, color: done ? T.muted : T.ink }}>
+                  {protocol.times?.length ? `Prise ${t}` : "Marquer comme pris"}
+                </span>
+                <span style={{ fontFamily: FM, fontSize: 9.5, letterSpacing: ".1em", color: done ? T.sage : T.amber }}>{done ? "● LOG" : "○ WAIT"}</span>
+              </button>
+            );
+          })}
+        </div>
+
+        <button onClick={() => setOpen((o) => !o)} style={{ background: "none", border: "none", color: T.clay, cursor: "pointer", fontSize: 11, fontFamily: FM, padding: "10px 0 0", letterSpacing: ".04em" }}>
+          {open ? "− masquer" : `+ noter un effet${effects.length ? ` (${effects.length})` : ""}`}
+        </button>
+        {open && <EffectPicker value={effects} onChange={onEffects} />}
+      </div>
+    </div>
+  );
+}
+
+const BASE_EFFECTS = ["Nausée", "Vomissement", "Fatigue", "Maux de tête", "Trouble digestif", "Rougeur injection", "Vertige"];
+const SEVERE_EFFECTS = ["Vomissement", "Vertige"];
+function EffectPicker({ value, onChange, family, customEffects = [], onAddCustom }) {
+  const [adding, setAdding] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  // family-specific effects (fallback to base list), then custom, then "Rien à signaler" last
+  const familyEffects = (family && FAMILIES[family]?.effects) ? FAMILIES[family].effects : BASE_EFFECTS;
+  // include any already-selected values that aren't in the known lists (so they stay visible)
+  const known = new Set([...familyEffects, ...customEffects]);
+  const extras = value.filter((v) => v !== "Rien à signaler" && !known.has(v));
+  const chips = [...familyEffects, ...customEffects, ...extras, "Rien à signaler"];
+
+  const toggle = (e) => onChange(value.includes(e) ? value.filter((x) => x !== e) : [...value, e]);
+  const severe = value.some((e) => SEVERE_EFFECTS.includes(e));
+
+  const addDraft = () => {
+    const label = draft.trim();
+    if (!label) return;
+    if (onAddCustom) onAddCustom(label);
+    if (!value.includes(label)) onChange([...value, label]);
+    setDraft(""); setAdding(false);
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+        {chips.map((e) => {
+          const on = value.includes(e);
+          return <button key={e} onClick={() => toggle(e)} style={{ border: `1px solid ${on ? T.clay : T.line}`, background: on ? T.clay : "transparent", color: on ? "#06120C" : T.muted, borderRadius: 14, padding: "4px 10px", fontSize: 11.5, cursor: "pointer" }}>{e}</button>;
+        })}
+        {!adding && (
+          <button onClick={() => setAdding(true)} style={{ border: `1px dashed ${T.lineStrong}`, background: "transparent", color: T.clay, borderRadius: 14, padding: "4px 10px", fontSize: 11.5, cursor: "pointer", fontFamily: FM }}>+ autre</button>
+        )}
+      </div>
+
+      {adding && (
+        <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+          <input value={draft} onChange={(e) => setDraft(e.target.value)} onKeyDown={(e) => e.key === "Enter" && addDraft()} placeholder="Nom de l'effet" style={{ ...inputStyle, flex: 1, padding: "7px 10px", fontSize: 12.5 }} autoFocus />
+          <button onClick={addDraft} style={btnPrimary({ padding: "7px 12px", fontSize: 12 })}>Ajouter</button>
+        </div>
+      )}
+
+      {severe && <div style={{ marginTop: 8, fontSize: 12, color: T.red, lineHeight: 1.45, display: "flex", gap: 8 }}>
+        <span style={{ fontFamily: FM }}>!</span>
+        <span>Si ces effets sont sévères ou répétés, ce n'est pas à surveiller : arrête et consulte un médecin.</span>
+      </div>}
+    </div>
+  );
+}
+
+function collectLabDue(protocols, labLogs) {
+  const out = [];
+  protocols.forEach((p) => {
+    (p.metrics || []).forEach((mid) => {
+      const m = METRICS[mid];
+      if (!m || m.kind !== "labReminder") return;
+      const interval = p.labIntervals?.[mid] || 56; // default ~8 weeks
+      const done = (labLogs[mid] || []).map((x) => x.date).sort();
+      const last = done.length ? done[done.length - 1] : p.startDate;
+      const next = addDays(last, interval);
+      const du = daysUntil(next);
+      if (du <= 14) out.push({ metric: m, protocol: p, nextDate: next, daysUntil: du });
+    });
+  });
+  return out.sort((a, b) => a.daysUntil - b.daysUntil);
+}
+function LabRow({ metric, protocol, nextDate, daysUntil: du }) {
+  const overdue = du < 0;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "10px 13px", background: T.card, border: `1px solid ${overdue ? T.red : T.line}`, borderRadius: 10 }}>
+      <span style={{ fontSize: 16 }}>{metric.icon}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13.5, fontWeight: 500 }}>{metric.label}</div>
+        <div style={{ fontSize: 11.5, color: T.muted }}>{protocol.substance}</div>
+      </div>
+      <div style={{ textAlign: "right", fontFamily: FM, fontSize: 11 }}>
+        <div style={{ color: overdue ? T.red : T.amber }}>{overdue ? `en retard de ${-du}j` : du === 0 ? "aujourd'hui" : `dans ${du}j`}</div>
+        <div style={{ color: T.muted }}>{fmtShort(nextDate)}</div>
+      </div>
+    </div>
+  );
+}
+
+function UpcomingStrip({ protocols }) {
+  const days = [];
+  for (let i = 1; i <= 7; i++) {
+    const dk = addDays(todayKey(), i);
+    const items = protocols.map((p) => ({ p, dose: doseForDate(p, dk) })).filter((x) => x.dose !== null);
+    if (items.length) days.push({ dk, items });
+  }
+  if (!days.length) return null;
+  return (
+    <div style={{ marginTop: 26 }}>
+      <SectionTitle eyebrow="à venir" title="7 prochains jours" small />
+      <div style={{ display: "grid", gap: 8 }}>
+        {days.map(({ dk, items }) => (
+          <div key={dk} style={{ display: "flex", alignItems: "center", gap: 12, padding: "9px 13px", background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}>
+            <span style={{ fontFamily: FM, fontSize: 11, color: T.muted, width: 92, flexShrink: 0, textTransform: "capitalize" }}>{fmtDate(dk)}</span>
+            <span style={{ fontSize: 13 }}>{items.map((it, i) => <span key={it.p.id}>{i > 0 && <span style={{ color: T.line }}> · </span>}{it.p.substance} <b style={{ color: T.clay, fontFamily: FM }}>{it.dose}mg</b></span>)}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// PROTOCOLS
+// ============================================================================
+function Protocols({ protocols, setProtocols }) {
+  const [editing, setEditing] = useState(null);
+  const [creating, setCreating] = useState(false);
+  const remove = (id) => setProtocols((p) => p.filter((x) => x.id !== id));
+  const upsert = (proto) => {
+    setProtocols((prev) => prev.some((x) => x.id === proto.id) ? prev.map((x) => x.id === proto.id ? proto : x) : [...prev, proto]);
+    setEditing(null); setCreating(false);
+  };
+  if (creating || editing) return <ProtocolForm initial={editing} onSave={upsert} onCancel={() => { setEditing(null); setCreating(false); }} />;
+  return (
+    <div>
+      <SectionTitle eyebrow="protocoles" title="Tes schémas de prise" />
+      <div style={{ ...cardStyle(), background: T.blush, borderStyle: "dashed", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, lineHeight: 1.55 }}>Entre le schéma défini <b>avec ton médecin</b> : substance, fréquence, paliers de titration, et les suivis pertinents. L'app les déroule, elle ne décide d'aucune dose.</div>
+      </div>
+      <div style={{ display: "grid", gap: 12 }}>
+        {protocols.map((p) => <ProtocolCard key={p.id} p={p} onEdit={() => setEditing(p)} onDelete={() => remove(p.id)} />)}
+      </div>
+      <button onClick={() => setCreating(true)} style={btnPrimary({ marginTop: 16, width: "100%" })}>+ Nouveau protocole</button>
+    </div>
+  );
+}
+
+function ProtocolCard({ p, onEdit, onDelete }) {
+  const totalWeeks = p.steps.reduce((a, s) => a + Number(s.weeks), 0);
+  const end = addDays(p.startDate, totalWeeks * 7 - 1);
+  return (
+    <div style={cardStyle()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div><div style={{ fontFamily: FD, fontSize: 19, fontWeight: 500 }}>{p.substance}</div><div style={{ fontSize: 12, color: T.muted }}>{p.name}</div></div>
+        <div style={{ display: "flex", gap: 6 }}><IconBtn onClick={onEdit} label="Modifier" /><IconBtn onClick={onDelete} label="Suppr" danger /></div>
+      </div>
+      <div style={{ display: "flex", gap: 14, marginTop: 10, fontFamily: FM, fontSize: 11, color: T.muted, flexWrap: "wrap" }}>
+        <span>tous les {p.frequencyDays}j</span>
+        {p.times?.length > 1 && <span>{p.times.length}×/prise</span>}
+        <span>début {fmtShort(p.startDate)}</span>
+        <span>{totalWeeks} sem</span>
+      </div>
+      <div style={{ marginTop: 12, display: "grid", gap: 4 }}>
+        {p.steps.map((s, i) => {
+          const wStart = p.steps.slice(0, i).reduce((a, x) => a + Number(x.weeks), 0) + 1;
+          const wEnd = wStart + Number(s.weeks) - 1;
+          return <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12.5 }}>
+            <span style={{ fontFamily: FM, fontSize: 10.5, color: T.muted, width: 70, flexShrink: 0 }}>sem {wStart}{wEnd !== wStart ? `–${wEnd}` : ""}</span>
+            <span style={{ height: 1, flex: 1, background: T.line }} />
+            <span style={{ fontFamily: FM, color: T.clay, fontWeight: 500 }}>{s.doseMg} mg</span>
+          </div>;
+        })}
+      </div>
+      {p.metrics?.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {p.metrics.map((mid) => METRICS[mid] && (
+            <span key={mid} style={{ fontSize: 10.5, fontFamily: FM, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 12, padding: "2px 8px" }}>{METRICS[mid].icon} {METRICS[mid].label}</span>
+          ))}
+        </div>
+      )}
+      {p.notes && <div style={{ marginTop: 10, fontSize: 12.5, color: T.muted, fontStyle: "italic" }}>{p.notes}</div>}
+    </div>
+  );
+}
+
+function ProtocolForm({ initial, onSave, onCancel }) {
+  const [name, setName] = useState(initial?.name || "");
+  const [substance, setSubstance] = useState(initial?.substance || "");
+  const [family, setFamily] = useState(initial?.family || "");
+  const [customMode, setCustomMode] = useState(
+    !!initial?.substance && !Object.values(FAMILIES).some((f) => f.substances.includes(initial.substance))
+  );
+  const [startMode, setStartMode] = useState(initial ? "date" : "today"); // today | date
+  const [startDate, setStartDate] = useState(initial?.startDate || todayKey());
+  const [frequencyDays, setFrequencyDays] = useState(initial?.frequencyDays || 7);
+  const [timesPerDay, setTimesPerDay] = useState(initial?.times?.length || 1);
+  const [notes, setNotes] = useState(initial?.notes || "");
+  const [steps, setSteps] = useState(initial?.steps || [{ weeks: 4, doseMg: "" }]);
+  const [metrics, setMetrics] = useState(initial?.metrics || []);
+  const [labIntervals, setLabIntervals] = useState(initial?.labIntervals || {});
+  const [reviewInterval, setReviewInterval] = useState(initial?.reviewInterval || 0); // 0=off, else 7/14/30
+
+  const valid = substance.trim() && steps.every((s) => s.weeks && s.doseMg !== "") && steps.length;
+
+  const applyFamily = (fk) => {
+    setFamily(fk);
+    setMetrics(FAMILIES[fk].metrics.slice());
+    // reset substance choice when switching family, unless it belongs to the new family
+    if (!FAMILIES[fk].substances.includes(substance)) {
+      setSubstance("");
+      setCustomMode(fk === "other");
+    }
+  };
+  const toggleMetric = (mid) => setMetrics((m) => m.includes(mid) ? m.filter((x) => x !== mid) : [...m, mid]);
+  const updateStep = (i, k, v) => setSteps((s) => s.map((x, idx) => idx === i ? { ...x, [k]: v } : x));
+
+  const submit = () => {
+    if (!valid) return;
+    const times = timesPerDay > 1 ? Array.from({ length: timesPerDay }, (_, i) => `${i + 1}/${timesPerDay}`) : [];
+    // start mode: "today" = first injection now; "date" = user-picked first injection date.
+    // (frequency only spaces subsequent injections; the schedule always begins at the first injection.)
+    const resolvedStart = startMode === "today" ? todayKey() : startDate;
+    onSave({
+      id: initial?.id || `p_${Date.now()}`,
+      name: name.trim() || substance.trim(), substance: substance.trim(), family,
+      startDate: resolvedStart, frequencyDays: Number(frequencyDays), times,
+      notes: notes.trim(),
+      steps: steps.map((s) => ({ weeks: Number(s.weeks), doseMg: Number(s.doseMg) })),
+      metrics,
+      labIntervals,
+      reviewInterval: Number(reviewInterval),
+    });
+  };
+
+  return (
+    <div>
+      <SectionTitle eyebrow={initial ? "modifier" : "nouveau"} title="Protocole" />
+
+      <Field label="Famille">
+        <div style={{ display: "grid", gap: 7 }}>
+          {Object.entries(FAMILIES).map(([fk, f]) => (
+            <button key={fk} onClick={() => applyFamily(fk)} style={{
+              textAlign: "left", padding: "9px 11px", borderRadius: 9, cursor: "pointer",
+              border: `1px solid ${family === fk ? T.clay : T.line}`, background: family === fk ? T.glow : T.card2,
+            }}>
+              <div style={{ fontSize: 13, fontWeight: family === fk ? 600 : 500, color: family === fk ? T.clayDeep : T.ink }}>{f.label}</div>
+              {f.examples && <div style={{ fontSize: 11, color: T.muted, marginTop: 1 }}>{f.examples}</div>}
+            </button>
+          ))}
+        </div>
+      </Field>
+
+      {family && (
+        <Field label="Substance">
+          {FAMILIES[family].substances.length > 0 && !customMode ? (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 7 }}>
+              {FAMILIES[family].substances.map((s) => {
+                const on = substance === s;
+                return <button key={s} onClick={() => setSubstance(s)} style={{
+                  border: `1px solid ${on ? T.clay : T.line}`, background: on ? T.clay : T.card, color: on ? "#06120C" : T.ink,
+                  borderRadius: 9, padding: "8px 13px", fontSize: 13, cursor: "pointer", fontWeight: on ? 600 : 500,
+                }}>{s}</button>;
+              })}
+              <button onClick={() => { setCustomMode(true); setSubstance(""); }} style={{
+                border: `1px dashed ${T.line}`, background: "transparent", color: T.clay,
+                borderRadius: 9, padding: "8px 13px", fontSize: 13, cursor: "pointer", fontFamily: FM,
+              }}>+ autre nom</button>
+            </div>
+          ) : (
+            <div>
+              <input value={substance} onChange={(e) => setSubstance(e.target.value)} placeholder="Nom de la substance" style={inputStyle} autoFocus />
+              {FAMILIES[family].substances.length > 0 && (
+                <button onClick={() => { setCustomMode(false); setSubstance(""); }} style={{ background: "none", border: "none", color: T.clay, cursor: "pointer", fontSize: 11.5, fontFamily: FM, padding: "8px 0 0" }}>← revenir à la liste</button>
+              )}
+            </div>
+          )}
+        </Field>
+      )}
+      <Field label="Nom du protocole (optionnel)">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="ex. Cure printemps" style={inputStyle} />
+      </Field>
+
+      <Field label="Première injection">
+        <div style={{ display: "flex", gap: 8 }}>
+          {[["today", "Aujourd'hui"], ["date", "Date précise"]].map(([v, l]) => (
+            <button key={v} onClick={() => setStartMode(v)} style={{ flex: 1, padding: "9px", borderRadius: 2, cursor: "pointer", fontSize: 13, border: `1px solid ${startMode === v ? T.clay : T.lineStrong}`, background: startMode === v ? T.clay : "transparent", color: startMode === v ? "#06120C" : T.muted, fontWeight: startMode === v ? 600 : 500 }}>{l}</button>
+          ))}
+        </div>
+        {startMode === "date" && (
+          <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={{ ...inputStyle, marginTop: 8 }} />
+        )}
+        <div style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.4 }}>
+          {startMode === "today" ? "La cure démarre aujourd'hui." : "Fixe le jour de ta première injection."} Les suivantes s'espacent selon la fréquence.
+        </div>
+      </Field>
+
+      <Field label="Fréquence (jours entre 2 injections)">
+        <input type="number" min={1} value={frequencyDays} onChange={(e) => setFrequencyDays(e.target.value)} style={inputStyle} />
+      </Field>
+
+      <Field label="Prises par jour de prise">
+        <div style={{ display: "flex", gap: 8 }}>
+          {[1, 2, 3].map((n) => (
+            <button key={n} onClick={() => setTimesPerDay(n)} style={{ flex: 1, padding: "9px", borderRadius: 9, cursor: "pointer", fontSize: 13, border: `1px solid ${timesPerDay === n ? T.clay : T.line}`, background: timesPerDay === n ? T.clay : "transparent", color: timesPerDay === n ? "#06120C" : T.muted }}>{n}×</button>
+          ))}
+        </div>
+      </Field>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: T.muted, marginBottom: 8 }}>Paliers de titration</div>
+        <div style={{ display: "grid", gap: 8 }}>
+          {steps.map((s, i) => (
+            <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+                <input type="number" min={1} value={s.weeks} onChange={(e) => updateStep(i, "weeks", e.target.value)} style={{ ...inputStyle, width: 56, textAlign: "center" }} />
+                <span style={{ fontSize: 12, color: T.muted }}>sem à</span>
+                <input type="number" min={0} step="0.05" value={s.doseMg} onChange={(e) => updateStep(i, "doseMg", e.target.value)} placeholder="mg" style={{ ...inputStyle, width: 72, textAlign: "center" }} />
+                <span style={{ fontSize: 12, color: T.muted }}>mg</span>
+              </div>
+              {steps.length > 1 && <button onClick={() => setSteps((s) => s.filter((_, idx) => idx !== i))} style={{ background: "none", border: "none", color: T.clay, cursor: "pointer", fontSize: 18, padding: 4 }}>×</button>}
+            </div>
+          ))}
+        </div>
+        <button onClick={() => setSteps((s) => [...s, { weeks: 4, doseMg: "" }])} style={{ background: "none", border: `1px dashed ${T.line}`, color: T.clay, cursor: "pointer", fontSize: 12.5, fontFamily: FM, padding: "8px 12px", borderRadius: 8, marginTop: 8, width: "100%" }}>+ palier</button>
+      </div>
+
+      <div style={{ marginTop: 18 }}>
+        <div style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: T.muted, marginBottom: 4 }}>Suivis associés</div>
+        <div style={{ fontSize: 11.5, color: T.muted, marginBottom: 8, lineHeight: 1.4 }}>Active ce que tu veux suivre. Les bilans sanguins apparaissent comme rappels d'échéance, l'app ne juge aucune valeur.</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.values(METRICS).map((m) => {
+            const on = metrics.includes(m.id);
+            return <button key={m.id} onClick={() => toggleMetric(m.id)} style={{
+              border: `1px solid ${on ? T.clay : T.line}`, background: on ? T.clay : "transparent", color: on ? "#06120C" : T.muted,
+              borderRadius: 14, padding: "5px 11px", fontSize: 12, cursor: "pointer",
+            }}>{m.icon} {m.label}</button>;
+          })}
+        </div>
+
+        {/* per-lab frequency (only for selected blood-test reminders) */}
+        {metrics.filter((mid) => METRICS[mid]?.kind === "labReminder").length > 0 && (
+          <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+            <div style={{ fontSize: 11.5, color: T.muted, lineHeight: 1.4 }}>Fréquence de rappel des bilans (renouvelé automatiquement) :</div>
+            {metrics.filter((mid) => METRICS[mid]?.kind === "labReminder").map((mid) => (
+              <div key={mid} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ flex: 1, fontSize: 12.5 }}>{METRICS[mid].icon} {METRICS[mid].label.replace("Bilan ", "")}</span>
+                <div style={{ display: "flex", gap: 5 }}>
+                  {[7, 14, 30, 56].map((d) => {
+                    const cur = labIntervals[mid] || 56;
+                    return <button key={d} onClick={() => setLabIntervals((li) => ({ ...li, [mid]: d }))} style={{
+                      padding: "5px 9px", borderRadius: 2, cursor: "pointer", fontFamily: FM, fontSize: 11,
+                      border: `1px solid ${cur === d ? T.clay : T.lineStrong}`, background: cur === d ? T.clay : "transparent", color: cur === d ? "#06120C" : T.muted,
+                    }}>{d === 56 ? "8sem" : d === 30 ? "30j" : d === 14 ? "14j" : "7j"}</button>;
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <Field label="Bilan d'effets récapitulatif">
+        <div style={{ display: "flex", gap: 6 }}>
+          {[[0, "Aucun"], [7, "7j"], [14, "14j"], [30, "30j"]].map(([v, l]) => (
+            <button key={v} onClick={() => setReviewInterval(v)} style={{ flex: 1, padding: "8px", borderRadius: 2, cursor: "pointer", fontSize: 12.5, fontFamily: v === 0 ? FB : FM, border: `1px solid ${reviewInterval === v ? T.clay : T.lineStrong}`, background: reviewInterval === v ? T.clay : "transparent", color: reviewInterval === v ? "#06120C" : T.muted, fontWeight: reviewInterval === v ? 600 : 500 }}>{l}</button>
+          ))}
+        </div>
+        <div style={{ fontSize: 11, color: T.muted, marginTop: 6, lineHeight: 1.4 }}>
+          Un point récapitulatif de tes effets sur la période, renouvelé automatiquement. Se remplit dans l'onglet Historique.
+        </div>
+      </Field>
+
+      <Field label="Notes (optionnel)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} placeholder="ex. injection le matin, rotation des sites" style={{ ...inputStyle, resize: "vertical" }} /></Field>
+
+      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <button onClick={onCancel} style={btnGhost({ flex: 1 })}>Annuler</button>
+        <button onClick={submit} disabled={!valid} style={btnPrimary({ flex: 2, opacity: valid ? 1 : 0.4, cursor: valid ? "pointer" : "not-allowed" })}>{initial ? "Enregistrer" : "Créer le protocole"}</button>
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// TRACKING — logs every active metric across all protocols
+// ============================================================================
+function Tracking({ protocols, metricLogs, setMetricLogs, labLogs, setLabLogs }) {
+  // gather active metrics across protocols (unique)
+  const active = [];
+  const seen = new Set();
+  protocols.forEach((p) => (p.metrics || []).forEach((mid) => {
+    if (!seen.has(mid) && METRICS[mid]) { seen.add(mid); active.push(METRICS[mid]); }
+  }));
+
+  if (active.length === 0) {
+    return <div><SectionTitle eyebrow="suivi" title="Tes marqueurs" />
+      <Empty>Aucun suivi actif. Active des suivis dans un protocole (onglet <b>Protocoles</b>) — ils s'adaptent à chaque substance.</Empty></div>;
+  }
+
+  const numberMetrics = active.filter((m) => m.kind === "number" || m.kind === "scale");
+  const labMetrics = active.filter((m) => m.kind === "labReminder");
+
+  return (
+    <div>
+      <SectionTitle eyebrow="suivi" title="Tes marqueurs" />
+      <div style={{ display: "grid", gap: 16 }}>
+        {numberMetrics.map((m) => <MetricBlock key={m.id} metric={m} logs={metricLogs[m.id] || []} setLogs={(fn) => setMetricLogs((prev) => ({ ...prev, [m.id]: fn(prev[m.id] || []) }))} />)}
+      </div>
+      {labMetrics.length > 0 && (
+        <div style={{ marginTop: 22 }}>
+          <SectionTitle eyebrow="bilans sanguins" title="Marquer un bilan fait" small />
+          <div style={{ display: "grid", gap: 8 }}>
+            {labMetrics.map((m) => <LabLogRow key={m.id} metric={m} done={labLogs[m.id] || []} onDone={() => setLabLogs((prev) => ({ ...prev, [m.id]: [...(prev[m.id] || []), { date: todayKey() }] }))} />)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MetricBlock({ metric, logs, setLogs }) {
+  const [val, setVal] = useState("");
+  const sorted = [...logs].sort((a, b) => a.date.localeCompare(b.date));
+  const isScale = metric.kind === "scale";
+
+  const add = (v) => {
+    const num = parseFloat(v ?? val);
+    if (isNaN(num)) return;
+    if (isScale && (num < 0 || num > 10)) return;
+    setLogs((prev) => { const without = prev.filter((x) => x.date !== todayKey()); return [...without, { date: todayKey(), value: num }]; });
+    setVal("");
+  };
+
+  const last = sorted[sorted.length - 1], prev = sorted[sorted.length - 2];
+  const delta = last && prev ? last.value - prev.value : null;
+  const fluctuationFlag = metric.id === "weight" && delta !== null && Math.abs(delta) >= 2;
+
+  return (
+    <div style={cardStyle()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <span style={{ fontFamily: FD, fontSize: 17, fontWeight: 500 }}>{metric.icon} {metric.label}</span>
+        {last && <span style={{ fontFamily: FM, fontSize: 15, color: T.clay }}>{last.value}{metric.unit && ` ${metric.unit}`}</span>}
+      </div>
+
+      {isScale ? (
+        <div style={{ display: "flex", gap: 5, marginTop: 12, flexWrap: "wrap" }}>
+          {Array.from({ length: 11 }, (_, n) => (
+            <button key={n} onClick={() => add(n)} style={{
+              width: 30, height: 30, borderRadius: 7, cursor: "pointer", fontFamily: FM, fontSize: 12,
+              border: `1px solid ${last?.value === n ? T.clay : T.line}`, background: last?.value === n ? T.clay : T.card, color: last?.value === n ? "#06120C" : T.muted,
+            }}>{n}</button>
+          ))}
+        </div>
+      ) : (
+        <div style={{ display: "flex", gap: 10, marginTop: 12 }}>
+          <input type="number" step="0.1" value={val} onChange={(e) => setVal(e.target.value)} onKeyDown={(e) => e.key === "Enter" && add()} placeholder={`Valeur en ${metric.unit}`} style={{ ...inputStyle, flex: 1 }} />
+          <button onClick={() => add()} style={btnPrimary({ paddingLeft: 18, paddingRight: 18 })}>Ajouter</button>
+        </div>
+      )}
+
+      {sorted.length >= 2 && <div style={{ marginTop: 12 }}><MiniChart data={sorted} scale={isScale} /></div>}
+
+      {fluctuationFlag && (
+        <div style={{ marginTop: 11, padding: "9px 11px", borderRadius: 8, background: "rgba(245,192,74,0.08)", border: `1px solid ${T.amber}`, fontSize: 12.5, lineHeight: 1.45 }}>
+          Variation de {delta > 0 ? "+" : ""}{delta.toFixed(1)} kg depuis la dernière mesure. Si ta dose dépend du poids, reparles-en à ton médecin — l'app ne l'ajuste pas seule.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MiniChart({ data, scale }) {
+  const W = 560, H = 130, pad = 24;
+  const ys = data.map((d) => d.value);
+  const minY = scale ? 0 : Math.min(...ys) - 1;
+  const maxY = scale ? 10 : Math.max(...ys) + 1;
+  const px = (i) => pad + (i / (data.length - 1)) * (W - 2 * pad);
+  const py = (v) => H - pad - ((v - minY) / (maxY - minY || 1)) * (H - 2 * pad);
+  const path = data.map((d, i) => `${i === 0 ? "M" : "L"} ${px(i)} ${py(d.value)}`).join(" ");
+  const area = `${path} L ${px(data.length - 1)} ${H - pad} L ${px(0)} ${H - pad} Z`;
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: "100%", display: "block" }}>
+      <defs><linearGradient id={`g${data.length}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={T.clay} stopOpacity="0.16" /><stop offset="100%" stopColor={T.clay} stopOpacity="0" /></linearGradient></defs>
+      {[0, 1].map((f) => { const v = minY + f * (maxY - minY); return <line key={f} x1={pad} y1={py(v)} x2={W - pad} y2={py(v)} stroke={T.line} strokeWidth="1" />; })}
+      <path d={area} fill={`url(#g${data.length})`} />
+      <path d={path} fill="none" stroke={T.clay} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {data.map((d, i) => <circle key={i} cx={px(i)} cy={py(d.value)} r="2.6" fill={T.card} stroke={T.clay} strokeWidth="1.6" />)}
+      <text x={pad} y={H - 6} fontSize="8.5" fill={T.muted} fontFamily={FM}>{fmtShort(data[0].date)}</text>
+      <text x={W - pad} y={H - 6} fontSize="8.5" fill={T.muted} fontFamily={FM} textAnchor="end">{fmtShort(data[data.length - 1].date)}</text>
+    </svg>
+  );
+}
+
+function LabLogRow({ metric, done, onDone }) {
+  const last = done.length ? done.map((x) => x.date).sort().slice(-1)[0] : null;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 11, padding: "11px 13px", background: T.card, border: `1px solid ${T.line}`, borderRadius: 10 }}>
+      <span style={{ fontSize: 16 }}>{metric.icon}</span>
+      <div style={{ flex: 1 }}><div style={{ fontSize: 13.5, fontWeight: 500 }}>{metric.label}</div>{last && <div style={{ fontSize: 11, color: T.muted, fontFamily: FM }}>dernier : {fmtShort(last)}</div>}</div>
+      <button onClick={onDone} style={btnGhost({ padding: "7px 12px", fontSize: 12 })}>Fait aujourd'hui</button>
+    </div>
+  );
+}
+
+// ============================================================================
+// TOOLS — reconstitution calculator, checklist, export
+// ============================================================================
+function Tools({ protocols, tasks, setTasks, taskDone, setTaskDone, autoOff, setAutoOff, logs, metricLogs, labLogs }) {
+  return (
+    <div>
+      <SectionTitle eyebrow="outils" title="Calculateur & suivi" />
+      <Reconstitution />
+      <div style={{ marginTop: 26 }}>
+        <ChecklistBlock protocols={protocols} tasks={tasks} setTasks={setTasks} taskDone={taskDone} setTaskDone={setTaskDone} autoOff={autoOff} setAutoOff={setAutoOff} />
+      </div>
+      <div style={{ marginTop: 26 }}><ExportBlock protocols={protocols} logs={logs} metricLogs={metricLogs} labLogs={labLogs} /></div>
+    </div>
+  );
+}
+
+function Reconstitution() {
+  const [vialMg, setVialMg] = useState("");
+  const [waterMl, setWaterMl] = useState("");
+  const [doseMg, setDoseMg] = useState("");
+
+  const mg = parseFloat(vialMg), ml = parseFloat(waterMl), dose = parseFloat(doseMg);
+  const valid = mg > 0 && ml > 0 && dose > 0;
+  let concentration = null, volumeMl = null, units = null, warn = null;
+  if (valid) {
+    concentration = mg / ml;            // mg per ml
+    volumeMl = dose / concentration;    // ml to draw
+    units = volumeMl * 100;             // U-100 insulin syringe: 1 ml = 100 units
+    if (dose > mg) warn = "La dose dépasse le contenu total du flacon — revérifie tes chiffres.";
+    else if (units > 100) warn = "Le volume dépasse 1 ml (100 UI) : il te faudra plus d'une seringue, ou revérifie tes valeurs.";
+  }
+
+  return (
+    <div style={cardStyle()}>
+      <div style={{ fontFamily: FD, fontSize: 18, fontWeight: 500 }}>Calculateur de reconstitution</div>
+      <div style={{ fontSize: 12, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>
+        Convertit une dose <b>déjà fixée par ton protocole</b> en volume à prélever. Il ne choisit pas la dose.
+      </div>
+      <div style={{ display: "grid", gap: 10, marginTop: 14 }}>
+        <LabeledInput label="Peptide dans le flacon" unit="mg" value={vialMg} onChange={setVialMg} placeholder="ex. 10" />
+        <LabeledInput label="Eau bactériostatique ajoutée" unit="ml" value={waterMl} onChange={setWaterMl} placeholder="ex. 2" />
+        <LabeledInput label="Ta dose (depuis le protocole)" unit="mg" value={doseMg} onChange={setDoseMg} placeholder="ex. 0.5" />
+      </div>
+
+      {valid && (
+        <div style={{ marginTop: 14, padding: "13px 14px", borderRadius: 10, background: warn ? "rgba(245,192,74,0.08)" : T.glow, border: `1px solid ${warn ? T.amber : T.sage}` }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+            <span style={{ fontSize: 13, color: T.muted }}>À prélever</span>
+            <span style={{ fontFamily: FM, fontSize: 24, fontWeight: 500, color: warn ? T.amber : T.sage }}>{units.toFixed(0)} UI</span>
+          </div>
+          <div style={{ fontFamily: FM, fontSize: 11.5, color: T.muted, marginTop: 6, lineHeight: 1.6 }}>
+            soit {volumeMl.toFixed(3)} ml · concentration {concentration.toFixed(2)} mg/ml<br />
+            (seringue à insuline U-100 : 1 ml = 100 UI)
+          </div>
+          {warn && <div style={{ marginTop: 8, fontSize: 12.5, color: T.clayDeep, lineHeight: 1.45 }}>{warn}</div>}
+        </div>
+      )}
+      <div style={{ marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 }}>
+        Vérifie toujours le calcul et le type de seringue avant toute injection. En cas de doute, demande à ton médecin ou pharmacien.
+      </div>
+    </div>
+  );
+}
+function LabeledInput({ label, unit, value, onChange, placeholder }) {
+  return (
+    <div>
+      <div style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".08em", textTransform: "uppercase", color: T.muted, marginBottom: 5 }}>{label}</div>
+      <div style={{ display: "flex", alignItems: "center", border: `1px solid ${T.line}`, borderRadius: 9, background: T.card, overflow: "hidden" }}>
+        <input type="number" step="0.01" value={value} onChange={(e) => onChange(e.target.value)} placeholder={placeholder} style={{ flex: 1, border: "none", background: "transparent", padding: "10px 12px", fontSize: 14, outline: "none", color: T.ink, fontFamily: FB }} />
+        <span style={{ padding: "0 12px", fontFamily: FM, fontSize: 12, color: T.muted, borderLeft: `1px solid ${T.line}`, alignSelf: "stretch", display: "flex", alignItems: "center" }}>{unit}</span>
+      </div>
+    </div>
+  );
+}
+
+// ---- Task resolution ------------------------------------------------------
+// Resolve which tasks apply on a given date, merging auto-tasks (from active
+// protocols) with user tasks (custom, possibly scheduled/recurring).
+function resolveTasksForDate(dateStr, protocols, tasks, autoOff) {
+  const out = [];
+  const families = new Set(protocols.map((p) => p.family).filter(Boolean));
+  const anyDosingToday = protocols.some((p) => isDosingDay(p, dateStr));
+  const hasProtocols = protocols.length > 0;
+  // families that have a dosing protocol specifically today
+  const dosingFamiliesToday = new Set(protocols.filter((p) => isDosingDay(p, dateStr)).map((p) => p.family).filter(Boolean));
+
+  // Auto tasks — derived live, only if relevant protocols exist
+  AUTO_TASKS.forEach((t) => {
+    if (autoOff.includes(t.id)) return;
+    if (t.recurrence === "daily") {
+      const scopeOk = t.scope === "general" ? hasProtocols : families.has(t.scope);
+      if (scopeOk) out.push({ ...t, auto: true });
+    } else if (t.recurrence === "dosing") {
+      // general dosing task: any protocol dosing today; family dosing task: that family dosing today
+      const dosingOk = t.scope === "general" ? anyDosingToday : dosingFamiliesToday.has(t.scope);
+      if (dosingOk) out.push({ ...t, auto: true });
+    }
+  });
+
+  // User tasks
+  const wd = new Date(dateStr + "T00:00:00").getDay(); // 0=Sun
+  tasks.forEach((t) => {
+    if (t.recurrence === "once") {
+      if (t.date === dateStr) out.push({ ...t, auto: false });
+    } else if (t.recurrence === "daily") {
+      out.push({ ...t, auto: false });
+    } else if (t.recurrence === "weekly") {
+      if (t.weekday === wd) out.push({ ...t, auto: false });
+    } else if (t.recurrence === "dosing") {
+      if (anyDosingToday) out.push({ ...t, auto: false });
+    }
+  });
+  return out;
+}
+
+const WEEKDAYS = ["dim", "lun", "mar", "mer", "jeu", "ven", "sam"];
+const RECURRENCE_LABEL = { once: "une fois", daily: "chaque jour", weekly: "chaque semaine", dosing: "jour de prise" };
+
+function ChecklistBlock({ protocols, tasks, setTasks, taskDone, setTaskDone, autoOff, setAutoOff }) {
+  const [adding, setAdding] = useState(false);
+  const today = todayKey();
+  const todays = resolveTasksForDate(today, protocols, tasks, autoOff);
+  const doneToday = taskDone[today] || {};
+
+  const toggle = (taskId) => setTaskDone((prev) => {
+    const day = { ...(prev[today] || {}) };
+    if (day[taskId]) delete day[taskId]; else day[taskId] = true;
+    return { ...prev, [today]: day };
+  });
+
+  const removeUser = (taskId) => setTasks((ts) => ts.filter((t) => t.id !== taskId));
+  const disableAuto = (taskId) => setAutoOff((a) => a.includes(taskId) ? a : [...a, taskId]);
+
+  // upcoming scheduled user tasks (future one-off only, for visibility)
+  const upcoming = tasks
+    .filter((t) => t.recurrence === "once" && t.date > today)
+    .sort((a, b) => a.date.localeCompare(b.date));
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 12 }}>
+        <div style={{ fontFamily: FD, fontSize: 18, fontWeight: 500 }}>Checklist du jour</div>
+        <button onClick={() => setAdding((a) => !a)} style={{ background: "none", border: `1px solid ${T.line}`, color: T.clay, cursor: "pointer", fontSize: 12, fontFamily: FM, padding: "5px 11px", borderRadius: 8 }}>
+          {adding ? "fermer" : "+ tâche"}
+        </button>
+      </div>
+
+      {adding && <TaskForm onAdd={(t) => { setTasks((ts) => [...ts, t]); setAdding(false); }} onCancel={() => setAdding(false)} />}
+
+      {todays.length === 0 && !adding && (
+        <Empty>Aucune tâche aujourd'hui. Ajoute un protocole pour générer les rappels automatiques, ou crée une tâche.</Empty>
+      )}
+
+      <div style={{ display: "grid", gap: 8 }}>
+        {todays.map((item) => {
+          const done = !!doneToday[item.id];
+          return (
+            <TaskRow key={item.id} item={item} done={done}
+              onToggle={() => toggle(item.id)}
+              onRemove={() => item.auto ? null : removeUser(item.id)}
+              onDisableAuto={() => disableAuto(item.id)} />
+          );
+        })}
+      </div>
+
+      {autoOff.length > 0 && (
+        <button onClick={() => setAutoOff([])} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 11.5, fontFamily: FM, padding: "10px 0 0" }}>
+          ↺ réactiver les {autoOff.length} rappel(s) auto désactivé(s)
+        </button>
+      )}
+
+      {upcoming.length > 0 && (
+        <div style={{ marginTop: 18 }}>
+          <div style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: T.muted, marginBottom: 8 }}>Programmées</div>
+          <div style={{ display: "grid", gap: 7 }}>
+            {upcoming.map((t) => (
+              <div key={t.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", background: T.card, border: `1px solid ${T.line}`, borderRadius: 9 }}>
+                <span style={{ fontFamily: FM, fontSize: 10.5, color: T.clay, width: 60, flexShrink: 0 }}>{fmtShort(t.date)}</span>
+                <span style={{ flex: 1, fontSize: 13 }}>{t.label}</span>
+                <button onClick={() => removeUser(t.id)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 16, padding: 2 }}>×</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskRow({ item, done, onToggle, onRemove, onDisableAuto }) {
+  const [menu, setMenu] = useState(false);
+  return (
+    <div style={{ position: "relative", display: "flex", alignItems: "center", gap: 12, padding: "11px 13px", background: T.card, border: `1px solid ${done ? T.sage : T.line}`, borderRadius: 10 }}>
+      <button onClick={onToggle} style={{ width: 22, height: 22, borderRadius: 6, flexShrink: 0, cursor: "pointer", border: `1.8px solid ${done ? T.sage : T.clay}`, background: done ? T.sage : "transparent", display: "grid", placeItems: "center" }}>
+        {done && <svg viewBox="0 0 24 24" style={{ width: 14, height: 14, fill: "none", stroke: "#06120C", strokeWidth: 3, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M5 13l4 4L19 7" /></svg>}
+      </button>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: 13.5, textDecoration: done ? "line-through" : "none", color: done ? T.muted : T.ink }}>{item.label}</div>
+        <div style={{ fontFamily: FM, fontSize: 9.5, color: T.muted, marginTop: 1 }}>
+          {item.auto ? "auto" : RECURRENCE_LABEL[item.recurrence] || ""}{item.auto && ` · ${item.recurrence === "daily" ? "chaque jour" : "jour de prise"}`}
+        </div>
+      </div>
+      <button onClick={() => setMenu((m) => !m)} style={{ background: "none", border: "none", color: T.muted, cursor: "pointer", fontSize: 18, padding: "2px 6px", lineHeight: 1 }}>⋯</button>
+      {menu && (
+        <div style={{ position: "absolute", right: 10, top: 42, zIndex: 5, background: T.card, border: `1px solid ${T.line}`, borderRadius: 9, boxShadow: "0 6px 20px rgba(0,0,0,.1)", overflow: "hidden", minWidth: 180 }}>
+          {item.auto ? (
+            <button onClick={() => { onDisableAuto(); setMenu(false); }} style={menuItem}>Désactiver ce rappel<div style={menuSub}>ne reviendra plus</div></button>
+          ) : (
+            <button onClick={() => { onRemove(); setMenu(false); }} style={menuItem}>Supprimer la tâche</button>
+          )}
+          <button onClick={() => setMenu(false)} style={{ ...menuItem, color: T.muted, borderTop: `1px solid ${T.line}` }}>Annuler</button>
+        </div>
+      )}
+    </div>
+  );
+}
+const menuItem = { display: "block", width: "100%", textAlign: "left", background: "none", border: "none", cursor: "pointer", padding: "10px 13px", fontSize: 13, color: T.ink, fontFamily: FB };
+const menuSub = { fontSize: 10.5, color: T.muted, fontFamily: FM, marginTop: 1 };
+
+function TaskForm({ onAdd, onCancel }) {
+  const [label, setLabel] = useState("");
+  const [recurrence, setRecurrence] = useState("once");
+  const [date, setDate] = useState(todayKey());
+  const [weekday, setWeekday] = useState(new Date().getDay());
+
+  const valid = label.trim();
+  const submit = () => {
+    if (!valid) return;
+    const t = { id: `t_${Date.now()}`, label: label.trim(), recurrence };
+    if (recurrence === "once") t.date = date;
+    if (recurrence === "weekly") t.weekday = weekday;
+    onAdd(t);
+  };
+
+  return (
+    <div style={{ ...cardStyle(), marginBottom: 12, background: T.blush }}>
+      <input value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Intitulé de la tâche" style={inputStyle} autoFocus />
+
+      <div style={{ marginTop: 10 }}>
+        <div style={{ fontFamily: FM, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 6 }}>Récurrence</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {Object.entries(RECURRENCE_LABEL).map(([k, l]) => (
+            <button key={k} onClick={() => setRecurrence(k)} style={{ border: `1px solid ${recurrence === k ? T.clay : T.line}`, background: recurrence === k ? T.clay : "transparent", color: recurrence === k ? "#06120C" : T.muted, borderRadius: 14, padding: "5px 11px", fontSize: 12, cursor: "pointer" }}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {recurrence === "once" && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontFamily: FM, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 6 }}>Date</div>
+          <input type="date" value={date} min={todayKey()} onChange={(e) => setDate(e.target.value)} style={inputStyle} />
+        </div>
+      )}
+      {recurrence === "weekly" && (
+        <div style={{ marginTop: 10 }}>
+          <div style={{ fontFamily: FM, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 6 }}>Jour</div>
+          <div style={{ display: "flex", gap: 5 }}>
+            {WEEKDAYS.map((d, i) => (
+              <button key={i} onClick={() => setWeekday(i)} style={{ flex: 1, padding: "8px 0", borderRadius: 8, fontSize: 11.5, cursor: "pointer", fontFamily: FM, border: `1px solid ${weekday === i ? T.clay : T.line}`, background: weekday === i ? T.clay : T.card, color: weekday === i ? "#06120C" : T.muted }}>{d}</button>
+            ))}
+          </div>
+        </div>
+      )}
+      {recurrence === "dosing" && (
+        <div style={{ marginTop: 8, fontSize: 11.5, color: T.muted, lineHeight: 1.4 }}>Apparaîtra chaque jour où au moins un protocole prévoit une prise.</div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <button onClick={onCancel} style={btnGhost({ flex: 1 })}>Annuler</button>
+        <button onClick={submit} disabled={!valid} style={btnPrimary({ flex: 2, opacity: valid ? 1 : 0.4, cursor: valid ? "pointer" : "not-allowed" })}>Ajouter</button>
+      </div>
+    </div>
+  );
+}
+
+function ExportBlock({ protocols, logs, metricLogs, labLogs }) {
+  const [copied, setCopied] = useState(false);
+
+  const buildReport = () => {
+    const lines = [];
+    lines.push("SUIVI PEPTIDES — RÉCAPITULATIF");
+    lines.push(`Généré le ${new Date().toLocaleString("fr-FR")}`);
+    lines.push("");
+    lines.push("PROTOCOLES");
+    protocols.forEach((p) => {
+      const tw = p.steps.reduce((a, s) => a + Number(s.weeks), 0);
+      lines.push(`• ${p.substance}${p.name && p.name !== p.substance ? ` (${p.name})` : ""}`);
+      lines.push(`  Début ${p.startDate} · tous les ${p.frequencyDays}j${p.times?.length > 1 ? ` · ${p.times.length}×/jour` : ""} · ${tw} sem`);
+      p.steps.forEach((s, i) => {
+        const ws = p.steps.slice(0, i).reduce((a, x) => a + Number(x.weeks), 0) + 1;
+        lines.push(`    sem ${ws}+ : ${s.doseMg} mg`);
+      });
+    });
+    lines.push("");
+    lines.push("MARQUEURS (dernières valeurs)");
+    Object.entries(metricLogs).forEach(([mid, arr]) => {
+      if (!arr?.length || !METRICS[mid]) return;
+      const sorted = [...arr].sort((a, b) => a.date.localeCompare(b.date));
+      const recent = sorted.slice(-8).map((x) => `${fmtShort(x.date)}: ${x.value}${METRICS[mid].unit ? METRICS[mid].unit : ""}`).join("  ");
+      lines.push(`• ${METRICS[mid].label} — ${recent}`);
+    });
+    lines.push("");
+    lines.push("BILANS RÉALISÉS");
+    Object.entries(labLogs).forEach(([mid, arr]) => {
+      if (!arr?.length || !METRICS[mid]) return;
+      lines.push(`• ${METRICS[mid].label} : ${arr.map((x) => fmtShort(x.date)).join(", ")}`);
+    });
+    lines.push("");
+    lines.push("EFFETS NOTÉS");
+    const effDays = Object.entries(logs).filter(([, d]) => d.effects && Object.keys(d.effects).length);
+    effDays.sort((a, b) => a[0].localeCompare(b[0]));
+    effDays.slice(-20).forEach(([date, d]) => {
+      Object.entries(d.effects).forEach(([pid, eff]) => {
+        if (!eff?.length) return;
+        const proto = protocols.find((p) => p.id === pid);
+        lines.push(`• ${fmtShort(date)} (${proto?.substance || "?"}) : ${eff.join(", ")}`);
+      });
+    });
+    return lines.join("\n");
+  };
+
+  const copy = async () => {
+    const text = buildReport();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true); setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // fallback: show in a prompt-less way is hard; rely on clipboard
+      setCopied(false);
+    }
+  };
+
+  return (
+    <div style={cardStyle()}>
+      <div style={{ fontFamily: FD, fontSize: 18, fontWeight: 500 }}>Export pour le médecin</div>
+      <div style={{ fontSize: 12, color: T.muted, marginTop: 3, lineHeight: 1.5 }}>
+        Copie un récapitulatif texte (protocoles, marqueurs, bilans, effets) à coller dans un message ou un document à montrer à ton médecin.
+      </div>
+      <button onClick={copy} style={btnPrimary({ marginTop: 14, width: "100%" })}>
+        {copied ? "✓ Copié dans le presse-papier" : "Copier le récapitulatif"}
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// CHAT
+// ============================================================================
+function Chat({ protocols }) {
+  return (
+    <div style={{ padding: "40px 8px", textAlign: "center" }}>
+      <div style={{ width: 52, height: 52, margin: "0 auto 18px", borderRadius: 12, background: T.card, border: `1px solid ${T.line}`, display: "grid", placeItems: "center" }}>
+        <svg viewBox="0 0 24 24" style={{ width: 26, height: 26, fill: "none", stroke: T.clay, strokeWidth: 1.6, strokeLinecap: "round", strokeLinejoin: "round" }}><path d="M21 11.5a8.38 8.38 0 0 1-8.5 8.5 9 9 0 0 1-4-1L3 20l1.5-5.5a8.5 8.5 0 1 1 16.5-3z" /></svg>
+      </div>
+      <div style={{ fontFamily: FD, fontSize: 20, fontWeight: 600, marginBottom: 8 }}>Assistant — bientôt disponible</div>
+      <div style={{ fontSize: 13.5, color: T.muted, lineHeight: 1.6, maxWidth: 340, margin: "0 auto" }}>
+        Le chat d'information sur les peptides sera activé dans une prochaine version. En attendant, parle de ton protocole et de tes doses avec ton médecin — lui seul peut te conseiller sur le dosage.
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// BodyMap — simple front-body diagram with tappable injection zones
+// ============================================================================
+function BodyMap({ sites, selected, onSelect, suggested, compact }) {
+  const h = compact ? 220 : 300;
+  return (
+    <div style={{ position: "relative", width: "100%", maxWidth: compact ? 260 : 300, margin: "0 auto" }}>
+      <svg viewBox="0 0 100 150" style={{ width: "100%", height: h, display: "block" }}>
+        {/* simple body silhouette */}
+        <g fill={T.card2} stroke={T.lineStrong} strokeWidth="1" strokeLinejoin="round">
+          <circle cx="50" cy="14" r="9" />
+          <path d="M42 23 h16 l4 6 v2 l-3 1 -1 20 -2 22 h-3 l-1.5 -18 h-3 l-1.5 18 h-3 l-2 -22 -1 -20 -3 -1 v-2 z" />
+          {/* arms */}
+          <path d="M42 30 l-9 3 -4 18 3 1 5 -16 5 -2 z" />
+          <path d="M58 30 l9 3 4 18 -3 1 -5 -16 -5 -2 z" />
+          {/* legs */}
+          <path d="M44 74 l-2 40 4 1 4 -38 z" />
+          <path d="M56 74 l2 40 -4 1 -4 -38 z" />
+        </g>
+        {/* zones */}
+        {SITES.map((s) => {
+          const sel = selected === s.id;
+          const isSuggested = suggested === s.id && !sel;
+          const recent = daysSinceSite(sites, s.id);
+          // color by recency: green if reposée (>7d or never), amber if recent
+          let fill = T.card, stroke = T.lineStrong;
+          if (recent !== null) { if (recent <= 3) { fill = "rgba(245,192,74,0.25)"; stroke = T.amber; } else if (recent <= 7) { fill = "rgba(245,192,74,0.12)"; stroke = T.amber; } else { fill = T.glow; stroke = T.sageDim; } }
+          if (sel) { fill = T.clay; stroke = T.clay; }
+          return (
+            <g key={s.id} onClick={() => onSelect && onSelect(s.id)} style={{ cursor: onSelect ? "pointer" : "default" }}>
+              {isSuggested && <circle cx={s.x} cy={s.y} r="6.5" fill="none" stroke={T.clay} strokeWidth="0.8" strokeDasharray="1.5 1.5" />}
+              <circle cx={s.x} cy={s.y} r="4" fill={fill} stroke={stroke} strokeWidth="1" />
+              {sel && <circle cx={s.x} cy={s.y} r="1.6" fill="#06120C" />}
+            </g>
+          );
+        })}
+      </svg>
+      {suggested && onSelect && (
+        <div style={{ textAlign: "center", fontFamily: FM, fontSize: 10.5, color: T.clay, marginTop: 4 }}>
+          ◌ suggéré : {SITE_BY_ID[suggested]?.label}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================================
+// SitesScreen — rotation overview + recent injections
+// ============================================================================
+function SitesScreen({ protocols, sites }) {
+  if (protocols.length === 0) return <Empty>Crée d'abord un protocole. Le suivi des sites démarre à ta première injection notée.</Empty>;
+
+  const suggested = suggestSite(sites);
+  const recent = [...sites].sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, 12);
+
+  return (
+    <div>
+      <SectionTitle eyebrow="rotation" title="Carte des sites" />
+      <div style={{ ...cardStyle(), paddingTop: 18 }}>
+        <BodyMap sites={sites} selected={null} suggested={suggested} onSelect={null} />
+        <div style={{ display: "flex", justifyContent: "center", gap: 16, marginTop: 12, flexWrap: "wrap" }}>
+          <Legend color={T.sageDim} label="reposée" />
+          <Legend color={T.amber} label="utilisée récemment" />
+          <Legend color={T.clay} label="suggérée" dashed />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 13, color: T.muted, lineHeight: 1.5 }}>
+        Prochaine zone conseillée : <b style={{ color: T.ink }}>{SITE_BY_ID[suggested]?.label}</b>. La rotation évite les nodules et l'irritation au même endroit.
+      </div>
+
+      {recent.length > 0 && (
+        <div style={{ marginTop: 22 }}>
+          <SectionTitle eyebrow="historique" title="Dernières injections" small />
+          <div style={{ display: "flex", flexDirection: "column" }}>
+            {recent.map((s, i) => {
+              const proto = protocols.find((p) => p.id === s.protocolId);
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 2px", borderBottom: `1px solid ${T.line}` }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: T.clayDeep, flexShrink: 0 }} />
+                  <span style={{ flex: 1, fontSize: 13.5 }}>{SITE_BY_ID[s.site]?.label || s.site}</span>
+                  <span style={{ fontSize: 12, color: T.muted }}>{proto?.substance || "—"}</span>
+                  <span style={{ fontFamily: FM, fontSize: 11, color: T.faint, width: 58, textAlign: "right" }}>{fmtShort(s.date)}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function Legend({ color, label, dashed }) {
+  return (
+    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: T.muted }}>
+      <span style={{ width: 11, height: 11, borderRadius: "50%", border: `1.5px ${dashed ? "dashed" : "solid"} ${color}`, background: dashed ? "transparent" : color }} />
+      {label}
+    </span>
+  );
+}
+
+// ============================================================================
+// Vials — stock management, auto-decrement, expiry
+// ============================================================================
+function Vials({ protocols, vials, setVials, sites }) {
+  const [editing, setEditing] = useState(null); // protocolId being edited
+
+  if (protocols.length === 0) return <Empty>Crée d'abord un protocole pour lui associer un flacon.</Empty>;
+
+  const setVial = (pid, patch) => setVials((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), ...patch } }));
+  const resetVial = (pid) => setVials((prev) => ({ ...prev, [pid]: { ...(prev[pid] || {}), dosesUsed: 0, reconDate: todayKey() } }));
+
+  return (
+    <div>
+      <SectionTitle eyebrow="stock" title="Tes flacons" />
+      <div style={{ ...cardStyle(), background: T.card2, borderStyle: "dashed", marginBottom: 16 }}>
+        <div style={{ fontSize: 12.5, color: T.muted, lineHeight: 1.5 }}>Déclare le contenu du flacon et ta dose. L'app calcule les doses restantes, les décompte à chaque injection notée, et te prévient avant la péremption.</div>
+      </div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {protocols.map((p) => {
+          const currentDose = doseForDate(p, todayKey()) ?? (p.steps[p.steps.length - 1]?.doseMg);
+          const v = vials[p.id];
+          const st = v ? vialStatus(v, currentDose) : null;
+          const isEditing = editing === p.id;
+          return (
+            <div key={p.id} style={cardStyle()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+                <div>
+                  <div style={{ fontFamily: FD, fontSize: 17, fontWeight: 600 }}>{p.substance}</div>
+                  <div style={{ fontFamily: FM, fontSize: 11, color: T.muted }}>dose actuelle {currentDose} mg</div>
+                </div>
+                <IconBtn onClick={() => setEditing(isEditing ? null : p.id)} label={isEditing ? "Fermer" : v ? "Modifier" : "Configurer"} />
+              </div>
+
+              {isEditing && <VialForm vial={v} onSave={(patch) => { setVial(p.id, patch); setEditing(null); }} />}
+
+              {!isEditing && st && (
+                <div style={{ marginTop: 12 }}>
+                  {/* doses gauge */}
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
+                    <span style={{ fontSize: 12.5, color: T.muted }}>Doses restantes</span>
+                    <span><span style={{ fontFamily: FM, fontSize: 20, fontWeight: 600, color: st.remaining <= 2 ? T.amber : T.clay }}>{st.remaining}</span><span style={{ fontFamily: FM, fontSize: 12, color: T.muted }}> / {st.totalDoses}</span></span>
+                  </div>
+                  <div style={{ height: 6, background: T.card2, borderRadius: 3, overflow: "hidden", border: `1px solid ${T.line}` }}>
+                    <div style={{ width: `${st.totalDoses ? (st.remaining / st.totalDoses) * 100 : 0}%`, height: "100%", background: st.remaining <= 2 ? T.amber : T.sage }} />
+                  </div>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginTop: 10, fontFamily: FM, fontSize: 11, color: T.muted }}>
+                    <span>{v.vialMg} mg · {v.waterMl} ml</span>
+                    {st.daysToExpiry !== null && <span style={{ color: st.daysToExpiry <= 5 ? T.red : T.muted }}>{st.daysToExpiry < 0 ? `périmé (${-st.daysToExpiry}j)` : `expire dans ${st.daysToExpiry}j`}</span>}
+                  </div>
+                  <button onClick={() => resetVial(p.id)} style={{ background: "none", border: `1px solid ${T.lineStrong}`, color: T.muted, cursor: "pointer", fontSize: 11, fontFamily: FM, padding: "6px 10px", borderRadius: 2, marginTop: 10, letterSpacing: ".04em" }}>
+                    ↺ nouveau flacon (remet à neuf)
+                  </button>
+                </div>
+              )}
+
+              {!isEditing && !st && <div style={{ marginTop: 10, fontSize: 12.5, color: T.faint, fontFamily: FM }}>Pas encore de flacon configuré.</div>}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function VialForm({ vial, onSave }) {
+  const [vialMg, setVialMg] = useState(vial?.vialMg || "");
+  const [waterMl, setWaterMl] = useState(vial?.waterMl || "");
+  const [reconDate, setReconDate] = useState(vial?.reconDate || todayKey());
+  const [expiryDays, setExpiryDays] = useState(vial?.expiryDays || 28);
+
+  const valid = Number(vialMg) > 0;
+  return (
+    <div style={{ marginTop: 12, borderTop: `1px solid ${T.line}`, paddingTop: 12 }}>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Field label="Peptide (mg)" grow><input type="number" step="0.1" value={vialMg} onChange={(e) => setVialMg(e.target.value)} placeholder="10" style={inputStyle} /></Field>
+        <Field label="Eau (ml)" grow><input type="number" step="0.1" value={waterMl} onChange={(e) => setWaterMl(e.target.value)} placeholder="2" style={inputStyle} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10 }}>
+        <Field label="Reconstitué le" grow><input type="date" value={reconDate} onChange={(e) => setReconDate(e.target.value)} style={inputStyle} /></Field>
+        <Field label="Conserv. (jours)" grow><input type="number" value={expiryDays} onChange={(e) => setExpiryDays(e.target.value)} placeholder="28" style={inputStyle} /></Field>
+      </div>
+      <button onClick={() => valid && onSave({ vialMg: Number(vialMg), waterMl: Number(waterMl), reconDate, expiryDays: Number(expiryDays), dosesUsed: vial?.dosesUsed || 0 })} disabled={!valid} style={btnPrimary({ marginTop: 12, width: "100%", opacity: valid ? 1 : 0.4, cursor: valid ? "pointer" : "not-allowed" })}>
+        Enregistrer le flacon
+      </button>
+    </div>
+  );
+}
+
+// ============================================================================
+// History — observance over time + effect↔dose correlation
+// ============================================================================
+// Periodic effect-review section: shows the current open review per protocol + past ones
+function ReviewSection({ protocols, logs, reviews, setReviews, customEffects, setCustomEffects }) {
+  const withReview = protocols.filter((p) => p.reviewInterval);
+  if (withReview.length === 0) return null;
+
+  return (
+    <div style={{ marginBottom: 26 }}>
+      <SectionTitle eyebrow="bilan d'effets" title="Point de la période" small />
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {withReview.map((p) => (
+          <ProtocolReview key={p.id} p={p} logs={logs}
+            saved={reviews[p.id] || []}
+            onSave={(entry) => setReviews((prev) => {
+              const list = (prev[p.id] || []).filter((r) => r.index !== entry.index);
+              return { ...prev, [p.id]: [...list, entry].sort((a, b) => a.index - b.index) };
+            })}
+            customEffects={customEffects}
+            onAddCustom={(label) => setCustomEffects((prev) => prev.includes(label) ? prev : [...prev, label])} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ProtocolReview({ p, logs, saved, onSave, customEffects, onAddCustom }) {
+  const periods = reviewPeriods(p.startDate, p.reviewInterval);
+  const current = periods[periods.length - 1];
+  const savedMap = Object.fromEntries(saved.map((r) => [r.index, r]));
+  const currentSaved = current ? savedMap[current.index] : null;
+
+  const [effects, setEffects] = useState(currentSaved?.effects || []);
+  const [note, setNote] = useState(currentSaved?.note || "");
+  const [editing, setEditing] = useState(false);
+
+  if (!current) return null;
+
+  // suggest effects seen during the period (from per-dose logs) to prefill quickly
+  const seenEffects = new Set();
+  Object.entries(logs).forEach(([dk, day]) => {
+    if (dk < current.start || dk > current.end) return;
+    ((day.effects || {})[p.id] || []).forEach((e) => { if (e !== "Rien à signaler") seenEffects.add(e); });
+  });
+
+  const periodNum = current.index + 1;
+  const isDone = !!currentSaved && !editing;
+
+  const save = () => { onSave({ index: current.index, periodStart: current.start, periodEnd: current.end, effects, note: note.trim(), savedAt: Date.now() }); setEditing(false); };
+
+  return (
+    <div style={cardStyle()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
+        <div style={{ fontFamily: FD, fontSize: 16, fontWeight: 600 }}>{p.substance}</div>
+        <div style={{ fontFamily: FM, fontSize: 10.5, color: T.muted }}>période {periodNum} · {fmtShort(current.start)}–{fmtShort(current.end)}</div>
+      </div>
+      <div style={{ fontFamily: FM, fontSize: 10, color: T.faint, marginTop: 2, letterSpacing: ".04em" }}>tous les {p.reviewInterval}j</div>
+
+      {isDone ? (
+        <div style={{ marginTop: 12 }}>
+          {currentSaved.effects.length === 0 ? (
+            <div style={{ fontSize: 13, color: T.sage, fontFamily: FM }}>Aucun effet noté sur la période ✓</div>
+          ) : (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {currentSaved.effects.map((e) => <span key={e} style={{ fontSize: 11.5, color: T.ink, border: `1px solid ${T.lineStrong}`, borderRadius: 14, padding: "3px 10px" }}>{e}</span>)}
+            </div>
+          )}
+          {currentSaved.note && <div style={{ fontSize: 12.5, color: T.muted, marginTop: 8, fontStyle: "italic" }}>{currentSaved.note}</div>}
+          <button onClick={() => { setEffects(currentSaved.effects); setNote(currentSaved.note || ""); setEditing(true); }} style={{ background: "none", border: "none", color: T.clay, cursor: "pointer", fontSize: 11.5, fontFamily: FM, padding: "8px 0 0" }}>modifier</button>
+        </div>
+      ) : (
+        <div style={{ marginTop: 12 }}>
+          {seenEffects.size > 0 && effects.length === 0 && (
+            <div style={{ fontSize: 11.5, color: T.muted, marginBottom: 8 }}>
+              Notés pendant la période : {[...seenEffects].join(", ")}. <button onClick={() => setEffects([...seenEffects])} style={{ background: "none", border: "none", color: T.clay, cursor: "pointer", fontSize: 11.5, fontFamily: FM, padding: 0 }}>tout ajouter</button>
+            </div>
+          )}
+          <EffectPicker value={effects} onChange={setEffects} family={p.family} customEffects={customEffects} onAddCustom={onAddCustom} />
+          <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} placeholder="Note libre sur la période (optionnel)" style={{ ...inputStyle, resize: "vertical", marginTop: 10 }} />
+          <button onClick={save} style={btnPrimary({ marginTop: 10, width: "100%" })}>Enregistrer le bilan</button>
+        </div>
+      )}
+
+      {/* past periods summary */}
+      {saved.filter((r) => r.index !== current.index).length > 0 && (
+        <details style={{ marginTop: 12 }}>
+          <summary style={{ fontFamily: FM, fontSize: 11, color: T.muted, cursor: "pointer" }}>bilans précédents ({saved.filter((r) => r.index !== current.index).length})</summary>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 8 }}>
+            {saved.filter((r) => r.index !== current.index).sort((a, b) => b.index - a.index).map((r) => (
+              <div key={r.index} style={{ borderLeft: `2px solid ${T.line}`, paddingLeft: 10 }}>
+                <div style={{ fontFamily: FM, fontSize: 10.5, color: T.faint }}>{fmtShort(r.periodStart)}–{fmtShort(r.periodEnd)}</div>
+                <div style={{ fontSize: 12, color: T.ink, marginTop: 2 }}>{r.effects.length ? r.effects.join(", ") : "Aucun effet ✓"}</div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function History({ protocols, logs, reviews, setReviews, customEffects, setCustomEffects }) {
+  if (protocols.length === 0) return <Empty>L'historique se construit au fil de tes prises. Crée un protocole pour commencer.</Empty>;
+
+  // ---- observance: over last 30 days, planned vs done takes ----
+  const today = todayKey();
+  let planned = 0, done = 0;
+  for (let i = 0; i < 30; i++) {
+    const dk = addDays(today, -i);
+    protocols.forEach((p) => {
+      if (doseForDate(p, dk) === null) return;
+      const times = p.times?.length || 1;
+      planned += times;
+      const pl = (logs[dk] || {})[p.id] || {};
+      for (let t = 0; t < times; t++) if (pl[t]?.done) done++;
+    });
+  }
+  const observance = planned > 0 ? Math.round((done / planned) * 100) : null;
+
+  // ---- effect ↔ dose correlation, per protocol ----
+  // For each protocol, group by dose level: collect which effects appeared and how often.
+  const perProtocol = protocols.map((p) => {
+    // map dose -> { days: n, effects: {name: count} }
+    const byDose = {};
+    Object.entries(logs).forEach(([dk, day]) => {
+      const dose = doseForDate(p, dk);
+      if (dose === null) return;
+      const pl = day[p.id] || {};
+      const anyDone = Object.values(pl).some((x) => x?.done);
+      if (!anyDone) return;
+      const effs = (day.effects || {})[p.id] || [];
+      if (!byDose[dose]) byDose[dose] = { days: 0, effects: {} };
+      byDose[dose].days++;
+      effs.forEach((e) => { if (e !== "Rien à signaler") byDose[dose].effects[e] = (byDose[dose].effects[e] || 0) + 1; });
+    });
+    return { p, byDose };
+  });
+
+  const hasAnyData = perProtocol.some((x) => Object.keys(x.byDose).length > 0);
+
+  return (
+    <div>
+      <ReviewSection protocols={protocols} logs={logs} reviews={reviews} setReviews={setReviews} customEffects={customEffects} setCustomEffects={setCustomEffects} />
+
+      <SectionTitle eyebrow="observance" title="30 derniers jours" />
+      {observance !== null ? (
+        <div style={cardStyle()}>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+            <span style={{ fontFamily: FM, fontSize: 34, fontWeight: 600, color: observance >= 80 ? T.sage : observance >= 50 ? T.amber : T.red }}>{observance}%</span>
+            <span style={{ fontSize: 13, color: T.muted }}>des prises prévues effectuées</span>
+          </div>
+          <div style={{ height: 8, background: T.card2, borderRadius: 4, overflow: "hidden", marginTop: 12, border: `1px solid ${T.line}` }}>
+            <div style={{ width: `${observance}%`, height: "100%", background: observance >= 80 ? T.sage : observance >= 50 ? T.amber : T.red }} />
+          </div>
+          <div style={{ fontFamily: FM, fontSize: 11, color: T.muted, marginTop: 8 }}>{done} / {planned} prises</div>
+        </div>
+      ) : <Empty>Pas encore assez de données d'observance.</Empty>}
+
+      {/* effect ↔ dose */}
+      <div style={{ marginTop: 26 }}>
+        <SectionTitle eyebrow="effets & dose" title="Évolution des effets" small />
+        {!hasAnyData && <Empty>Note tes effets à chaque prise pour voir ici comment ils évoluent selon la dose.</Empty>}
+        {perProtocol.map(({ p, byDose }) => {
+          const doses = Object.keys(byDose).map(Number).sort((a, b) => a - b);
+          if (doses.length === 0) return null;
+          // collect all effect names across doses
+          const allEffects = [...new Set(doses.flatMap((d) => Object.keys(byDose[d].effects)))];
+          return (
+            <div key={p.id} style={{ ...cardStyle(), marginBottom: 12 }}>
+              <div style={{ fontFamily: FD, fontSize: 16, fontWeight: 600, marginBottom: 12 }}>{p.substance}</div>
+              {allEffects.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: T.sage, fontFamily: FM }}>Aucun effet indésirable noté ✓</div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                  {allEffects.map((eff) => (
+                    <div key={eff}>
+                      <div style={{ fontSize: 12.5, color: T.ink, marginBottom: 5 }}>{eff}</div>
+                      <div style={{ display: "flex", gap: 5, alignItems: "flex-end", height: 40 }}>
+                        {doses.map((d) => {
+                          const count = byDose[d].effects[eff] || 0;
+                          const days = byDose[d].days;
+                          const ratio = days > 0 ? count / days : 0;
+                          return (
+                            <div key={d} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                              <div style={{ width: "100%", height: 30, background: T.card2, borderRadius: 2, overflow: "hidden", display: "flex", alignItems: "flex-end", border: `1px solid ${T.line}` }}>
+                                <div style={{ width: "100%", height: `${ratio * 100}%`, background: ratio > 0.5 ? T.amber : ratio > 0 ? T.clayDeep : "transparent" }} />
+                              </div>
+                              <span style={{ fontFamily: FM, fontSize: 9, color: T.faint }}>{d}mg</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ fontFamily: FM, fontSize: 10, color: T.faint, marginTop: 2 }}>hauteur = fréquence de l'effet à chaque palier de dose</div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ============================================================================
+// Shared UI
+// ============================================================================
+function SectionTitle({ eyebrow, title, small }) {
+  return <div style={{ marginTop: small ? 6 : 6, marginBottom: 14 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+      <span style={{ fontFamily: FM, fontSize: 12, color: T.clay }}>&gt;</span>
+      <span style={{ fontFamily: FM, fontSize: 10.5, letterSpacing: ".14em", textTransform: "uppercase", color: T.clay, fontWeight: 600 }}>{eyebrow}</span>
+    </div>
+    <h2 style={{ fontFamily: FD, fontSize: small ? 18 : 23, fontWeight: 600, margin: "5px 0 0", letterSpacing: "-.01em", color: T.ink }}>{title}</h2>
+  </div>;
+}
+function Field({ label, children, grow }) {
+  return <label style={{ display: "block", marginTop: 14, flex: grow ? 1 : undefined }}>
+    <div style={{ fontFamily: FM, fontSize: 10, letterSpacing: ".1em", textTransform: "uppercase", color: T.muted, marginBottom: 6 }}>{label}</div>
+    {children}
+  </label>;
+}
+function Empty({ children }) {
+  return <div style={{ ...cardStyle(), background: T.card2, borderStyle: "dashed", color: T.muted, fontSize: 13, lineHeight: 1.55, textAlign: "center", fontFamily: FM }}>{children}</div>;
+}
+function IconBtn({ onClick, label, danger }) {
+  return <button onClick={onClick} style={{ background: "none", border: `1px solid ${danger ? T.red : T.lineStrong}`, color: danger ? T.red : T.muted, cursor: "pointer", fontSize: 10.5, fontFamily: FM, padding: "4px 9px", borderRadius: 2, letterSpacing: ".06em", textTransform: "uppercase" }}>{label}</button>;
+}
+function cardStyle() { return { background: T.card, border: `1px solid ${T.line}`, borderRadius: 3, padding: "14px 15px" }; }
+const inputStyle = { width: "100%", boxSizing: "border-box", padding: "10px 12px", border: `1px solid ${T.lineStrong}`, borderRadius: 2, background: T.card2, color: T.ink, fontSize: 14, fontFamily: FM, outline: "none" };
+function btnPrimary(extra = {}) { return { background: T.clay, color: "#06120C", border: "none", borderRadius: 2, padding: "11px 16px", fontSize: 13, fontWeight: 700, fontFamily: FB, cursor: "pointer", letterSpacing: ".01em", display: "inline-flex", alignItems: "center", justifyContent: "center", ...extra }; }
+function btnGhost(extra = {}) { return { background: "transparent", color: T.muted, border: `1px solid ${T.lineStrong}`, borderRadius: 2, padding: "11px 16px", fontSize: 13, fontWeight: 500, fontFamily: FB, cursor: "pointer", ...extra }; }
+
+function Style() {
+  return <style>{`
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap');
+    * { -webkit-tap-highlight-color: transparent; }
+    body { background: ${T.bg}; }
+    input:focus, textarea:focus { border-color: ${T.clay} !important; }
+    ::placeholder { color: ${T.faint}; }
+    @keyframes bounce { 0%,80%,100%{transform:translateY(0);opacity:.5} 40%{transform:translateY(-4px);opacity:1} }
+    @media (prefers-reduced-motion: reduce){ *{animation:none!important} }
+    input[type="date"]{ color-scheme: dark; }
+    input[type="date"]::-webkit-calendar-picker-indicator { filter: invert(.7) sepia(1) saturate(6) hue-rotate(90deg); }
+  `}</style>;
+}
+
+
+// mount
+const _root = ReactDOM.createRoot(document.getElementById("root"));
+_root.render(<App />);
+</script>
+</body>
+</html>
